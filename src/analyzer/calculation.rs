@@ -1,6 +1,7 @@
 use arrow::{
     array::{Array, FixedSizeBinaryArray, Float32Array, RecordBatch},
     datatypes::{DataType, Field, Schema},
+    error::ArrowError,
 };
 use nalgebra::{DMatrix, DVector, Vector1};
 use rand::{SeedableRng, rngs::StdRng};
@@ -31,9 +32,24 @@ pub fn deterministic_projection(input: Vector1<f32>, d_out: usize, seed: u64) ->
     if norm == 0.0 { y.clone() } else { y / norm }
 }
 
-// =============================
-// Leiden Community Algorithm
-// =============================
+/// =============================
+/// Leiden Community Algorithm
+/// =============================
+/// The `ArrowGraph` struct contains nodes, edges, and indexes for a graph data structure.
+///
+/// Properties:
+///
+/// * `nodes`: The `nodes` property in the `ArrowGraph` struct represents a collection of records or
+///   data points that are stored in a tabular format. It is of type `RecordBatch`, which likely contains
+///   information about the nodes in the graph such as their attributes or properties.
+/// * `edges`: The `edges` property in the `ArrowGraph` struct represents a collection of records or
+///   data points that define the connections or relationships between nodes in the graph. Each record in
+///   the `edges` RecordBatch likely contains information such as source node, target node, edge weight,
+///   or any other relevant attributes
+/// * `indexes`: The `indexes` property in the `ArrowGraph` struct likely contains data structures or
+///   indexes that help optimize graph operations, such as quick lookups or traversal algorithms. These
+///   indexes could include adjacency lists, edge lists, or any other data structures that facilitate
+///   efficient graph processing.
 pub struct ArrowGraph {
     pub nodes: RecordBatch,
     pub edges: RecordBatch,
@@ -58,11 +74,8 @@ impl ArrowGraph {
 
     /// Create a graph from just edges (nodes will be inferred)
     pub fn from_edges(edges: RecordBatch) -> Result<Self, NError> {
-        // Create an empty nodes RecordBatch with proper schema
-        let nodes_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
-
-        let empty_nodes = RecordBatch::new_empty(nodes_schema);
-        Self::new(empty_nodes, edges)
+        let nodes = Self::infer_nodes(&edges)?;
+        Self::new(nodes, edges)
     }
 
     /// Get all node IDs
@@ -74,9 +87,72 @@ impl ArrowGraph {
     pub fn neighbors(&self, node_id: &Uuid) -> Option<&Vec<Uuid>> {
         self.indexes.neighbors(node_id)
     }
+
+    fn infer_nodes(edges: &RecordBatch) -> Result<RecordBatch, NError> {
+        // Infer nodes from the edges
+        let source_col = edges
+            .column(0)
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()
+            .ok_or_else(|| ArrowError::CastError("Failed to cast 'source' column".into()))?;
+
+        let target_col = edges
+            .column(1)
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()
+            .ok_or_else(|| ArrowError::CastError("Failed to cast 'target' column".into()))?;
+
+        let mut node_ids: HashSet<Uuid> = HashSet::new();
+
+        for i in 0..source_col.len() {
+            if !source_col.is_null(i) {
+                node_ids.insert(Uuid::from_slice(source_col.value(i))?);
+            }
+
+            if !target_col.is_null(i) {
+                node_ids.insert(Uuid::from_slice(target_col.value(i))?);
+            }
+        }
+
+        let ids = node_ids.into_iter().collect::<Vec<Uuid>>();
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "id",
+            DataType::FixedSizeBinary(16),
+            false,
+        )]));
+        let id_array = Arc::new(FixedSizeBinaryArray::try_from_iter(
+            ids.iter().map(|v| v.into_bytes()),
+        )?);
+
+        let nodes = RecordBatch::try_new(schema, vec![id_array])?;
+
+        Ok(nodes)
+    }
 }
 
 #[derive(Debug, Clone)]
+/// The `GraphIndexes` struct represents a graph with adjacency lists, reverse adjacency lists,
+/// node indexes, edge weights, node count, and edge count.
+///
+/// Properties:
+///
+/// * `adjacency_list`: The `adjacency_list` property is a HashMap where the keys are Uuids representing
+///   nodes in a graph, and the values are Vec<Uuid> representing the adjacent nodes connected to each key
+///   node.
+/// * `reverse_adjacency_list`: The `reverse_adjacency_list` property in the `GraphIndexes` struct
+///   represents a mapping of nodes to a list of nodes that have an edge pointing to the key node. In
+///   other words, it stores the reverse relationships of the nodes in the graph based on the edges.
+/// * `node_index`: The `node_index` property in the `GraphIndexes` struct is a HashMap that maps a
+///   `Uuid` key to a `usize` value. It is used to store the index of each node in the graph.
+/// * `edge_weights`: The `edge_weights` property in the `GraphIndexes` struct is a HashMap that stores
+///   the weights of edges in the graph. The keys are tuples of `(Uuid, Uuid)` representing the source and
+///   destination nodes of the edge, and the values are `f32` representing the weight of the
+/// * `node_count`: The `node_count` property in the `GraphIndexes` struct represents the total number
+///   of nodes in the graph. It is of type `usize`, which is an unsigned integer type used to represent
+///   the size of collections or indices.
+/// * `edge_count`: The `edge_count` property in the `GraphIndexes` struct represents the total number
+///   of edges in the graph. This count is the number of connections between nodes in the graph.
 pub struct GraphIndexes {
     pub adjacency_list: HashMap<Uuid, Vec<Uuid>>,
     pub reverse_adjacency_list: HashMap<Uuid, Vec<Uuid>>,
@@ -87,6 +163,7 @@ pub struct GraphIndexes {
 }
 
 impl GraphIndexes {
+    /// Build GraphIndexes from node, edge record batches
     pub fn build(nodes: &RecordBatch, edges: &RecordBatch) -> Result<Self, NError> {
         let mut adjacency_list: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
         let mut reverse_adjacency_list: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
@@ -184,7 +261,7 @@ impl GraphIndexes {
             Ok(Ok::<Result<Vec<Option<Uuid>>, uuid::Error>, NError>(
                 binary_array
                     .iter()
-                    .map(|v| v.map(Uuid::try_parse_ascii).transpose())
+                    .map(|v| v.map(Uuid::from_slice).transpose())
                     .collect(),
             )??)
         } else {
@@ -527,4 +604,122 @@ fn renumber_communities(communities: HashMap<Uuid, u32>) -> Result<HashMap<Uuid,
     }
 
     Ok(renumbered)
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::{
+        array::{FixedSizeBinaryArray, Float32Array, RecordBatch},
+        datatypes::{DataType, Field, Schema},
+    };
+    use nalgebra::Vector1;
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::Arc,
+        thread,
+    };
+    use uuid::Uuid;
+
+    use crate::analyzer::calculation::{ArrowGraph, deterministic_projection, leiden_communities};
+
+    fn create_test_graph(all_ids: &[Uuid; 6]) -> ArrowGraph {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("source", DataType::FixedSizeBinary(16), false),
+            Field::new("target", DataType::FixedSizeBinary(16), false),
+            Field::new("weight", DataType::Float32, true),
+        ]));
+
+        let sources = [
+            all_ids[0], all_ids[1], all_ids[0], all_ids[2], all_ids[3], all_ids[4], all_ids[2],
+        ];
+        let targets = [
+            all_ids[1], all_ids[0], all_ids[2], all_ids[5], all_ids[4], all_ids[5], all_ids[1],
+        ];
+        let weights = [1.0_f32, 0.9, 0.9, 0.3, 0.7, 0.6, 0.2];
+
+        let edges = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(sources.iter().map(|v| v.into_bytes()))
+                        .expect("Failed to create `source` fixedsizebinaryarray"),
+                ),
+                Arc::new(
+                    FixedSizeBinaryArray::try_from_iter(targets.iter().map(|v| v.into_bytes()))
+                        .expect("Failed to create `target` fixedsizebinaryarray"),
+                ),
+                Arc::new(Float32Array::from(
+                    weights.into_iter().collect::<Vec<f32>>(),
+                )),
+            ],
+        )
+        .expect("Failed to create record batch");
+
+        ArrowGraph::from_edges(edges).expect("Failed to create ArrowGraph instance")
+    }
+
+    #[test]
+    fn test_deterministic_projection() {
+        let input = Vector1::from_vec(vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+
+        let result1 = deterministic_projection(input, 384, 42);
+
+        let result2 = thread::spawn(move || deterministic_projection(input, 384, 42))
+            .join()
+            .expect("Thread paniced");
+
+        assert_eq!(result1.len(), result2.len());
+
+        assert_eq!(result1, result2);
+    }
+
+    #[test]
+    fn test_graph_building() {
+        let all_ids = [
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        ];
+        let graph = create_test_graph(&all_ids);
+
+        assert_eq!(graph.edge_count(), 7);
+
+        assert!(graph.node_ids().all(|v| all_ids.contains(v)))
+    }
+
+    #[test]
+    fn test_leiden_community() {
+        let all_ids = [
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        ];
+
+        let graph = create_test_graph(&all_ids);
+
+        let result = leiden_communities(&graph, Some(1.0), Some(1)).unwrap();
+
+        let mut communities: HashMap<Uuid, u32> = HashMap::new();
+
+        for (node_id, comm_id) in result {
+            communities.insert(node_id, comm_id);
+        }
+
+        let unique_communities: HashSet<u32> = communities.values().cloned().collect();
+
+        assert!(unique_communities.len() >= 2);
+
+        assert!(communities.contains_key(&all_ids[0]));
+        assert!(communities.contains_key(&all_ids[1]));
+        assert!(communities.contains_key(&all_ids[2]));
+        assert!(communities.contains_key(&all_ids[3]));
+        assert!(communities.contains_key(&all_ids[4]));
+        assert!(communities.contains_key(&all_ids[5]));
+    }
 }
