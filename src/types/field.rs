@@ -322,7 +322,7 @@ impl Storable for FieldDef {
                 ))?;
 
             for row_idx in 0..batch.num_rows() {
-                let id = Uuid::try_parse_ascii(ids_array.value(row_idx))?;
+                let id = Uuid::from_slice(ids_array.value(row_idx))?;
                 let silo_id = silo_id_array.value(row_idx).to_string();
 
                 let table_name = table_name_array.value(row_idx).to_string();

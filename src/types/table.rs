@@ -192,7 +192,7 @@ impl Storable for TableDef {
                 ))?;
 
             for row_idx in 0..batch.num_rows() {
-                let id = Uuid::try_parse_ascii(id_array.value(row_idx))?;
+                let id = Uuid::from_slice(id_array.value(row_idx))?;
                 let silo_id = silo_id_array.value(row_idx).to_string();
 
                 let name = name_array.value(row_idx).to_string();
@@ -471,7 +471,7 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, NErro
     let cardinality_col = struct_array.column(7).as_primitive::<UInt64Type>();
 
     for i in 0..num_fields {
-        let id = Uuid::try_parse_ascii(id_col.value(i))?;
+        let id = Uuid::from_slice(id_col.value(i))?;
         let silo_id = silo_id_col.value(i).to_string();
         let table_name = table_name_col.value(i).to_string();
         let name = name_col.value(i).to_string();
