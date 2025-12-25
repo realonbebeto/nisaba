@@ -36,7 +36,7 @@ futures = "0.3.31"
 lancedb = { version = "0.23.0", default-features = false }
 mongodb = "3.4.1"
 nalgebra = "0.34.1"
-parquet = { version = "56.2.0", default-features = false }
+parquet = { version = "57.1.0", default-features = false }
 rand = { version = "0.9.2", features = ["std_rng"] }
 rand_distr = "0.5.1"
 regex = "1.12.2"
