@@ -348,12 +348,6 @@ impl StorageConfig {
             return Err(NError::MissingDetail("Password cannot be empty".into()));
         }
 
-        if username.contains(['@', ':', '/']) {
-            return Err(NError::InvalidDetail(
-                "Username contains invalid characters (@, :, /)".into(),
-            ));
-        }
-
         Ok(())
     }
 
@@ -371,5 +365,94 @@ impl StorageConfig {
                 c => format!("%{:02X}", c as u8),
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_file_backend_creation() {
+        let config = StorageConfig::new_file_backend(StorageBackend::Csv, "/data/csvs").unwrap();
+
+        assert_eq!(config.dir_path, Some("/data/csvs".to_string()));
+        assert!(config.connection_string().is_ok());
+    }
+
+    #[test]
+    fn test_validation_fails_empty_path() {
+        let config = StorageConfig::new_file_backend(StorageBackend::Csv, "");
+
+        assert!(config.is_err())
+    }
+
+    #[test]
+    fn test_network_backend_creation_without_namespace() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::PostgreSQL,
+            "localhost",
+            5432,
+            "mydb",
+            "user",
+            "pass",
+            None::<String>,
+        )
+        .unwrap();
+
+        assert_eq!(config.host, Some("localhost".into()));
+        assert!(config.connection_string().is_ok());
+        assert!(config.namespace.is_none());
+    }
+
+    #[test]
+    fn test_network_backend_creation_with_namespace() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::PostgreSQL,
+            "localhost",
+            5432,
+            "mydb",
+            "user",
+            "pass",
+            Some("private"),
+        )
+        .unwrap();
+
+        assert_eq!(config.host, Some("localhost".into()));
+        assert!(config.connection_string().is_ok());
+        assert!(config.namespace.is_some());
+    }
+
+    #[test]
+    fn test_network_backend_creation_with_namespace_mysql() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::MySQL,
+            "localhost",
+            5432,
+            "mydb",
+            "user",
+            "pass",
+            Some("private"),
+        );
+
+        assert!(config.is_err());
+    }
+
+    #[test]
+    fn test_url_encoding() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::PostgreSQL,
+            "localhost",
+            5432,
+            "mydb",
+            "user@domain",
+            "pass:word",
+            Some("private"),
+        )
+        .unwrap();
+
+        let conn_str = config.connection_string().unwrap();
+        assert!(conn_str.contains("%40"));
+        assert!(conn_str.contains("%3A"));
     }
 }
