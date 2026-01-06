@@ -1,5 +1,3 @@
-use arrow_odbc::odbc_api;
-
 #[derive(Debug, thiserror::Error)]
 pub enum NError {
     #[error("Unknown Type")]
@@ -10,10 +8,6 @@ pub enum NError {
     SchemaError(String),
     #[error(transparent)]
     UnexpectedError(#[from] anyhow::Error),
-    #[error(transparent)]
-    OdbcApiError(#[from] odbc_api::Error),
-    #[error(transparent)]
-    ArrowOdbcError(#[from] arrow_odbc::Error),
     #[error(transparent)]
     ArrowError(#[from] arrow::error::ArrowError),
     #[error(transparent)]
@@ -34,6 +28,16 @@ pub enum NError {
     UuidError(#[from] uuid::Error),
     #[error(transparent)]
     ArrowGraphError(#[from] GraphError),
+    #[error(transparent)]
+    OdsError(#[from] calamine::OdsError),
+    #[error(transparent)]
+    XlsError(#[from] calamine::XlsError),
+    #[error(transparent)]
+    XlsbError(#[from] calamine::XlsbError),
+    #[error(transparent)]
+    XlsxError(#[from] calamine::XlsxError),
+    #[error(transparent)]
+    SqlxError(#[from] sqlx::Error),
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -1,0 +1,1092 @@
+use arrow::{
+    array::{
+        Array, ArrayRef, FixedSizeBinaryBuilder, Int64Array, LargeStringArray, RecordBatch,
+        StringArray,
+    },
+    compute::{CastOptions, cast_with_options},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    error::ArrowError,
+};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+use uuid::Uuid;
+
+use crate::error::NError;
+
+// ====================================
+// Casting Safety Analysis
+// ====================================
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub enum CastSafety {
+    /// No data loss, always succeedds
+    Safe,
+    /// Potential precision loss or truncation
+    Lossy,
+    /// May fail at runtime
+    Unsafe,
+}
+
+impl CastSafety {
+    /// Convert to numeric score for graph weighting (.0, 1.)
+    pub fn score(&self) -> f32 {
+        match self {
+            Self::Safe => 0.98,
+            Self::Lossy => 0.7,
+            &Self::Unsafe => 0.1,
+        }
+    }
+}
+
+/// Determines casting safety bewtween arrow types
+pub fn cast_safety(from: &DataType, to: &DataType) -> CastSafety {
+    // Exact match is always safe
+    if from == to {
+        return CastSafety::Safe;
+    }
+
+    match (from, to) {
+        //Timestamp conversions
+        (DataType::Int64, DataType::Timestamp { .. }) => CastSafety::Lossy,
+        (DataType::Timestamp { .. }, DataType::Int64) => CastSafety::Safe,
+        (DataType::Timestamp(u1, ..), DataType::Timestamp(u2, ..)) if u1 == u2 => CastSafety::Safe,
+        (DataType::Timestamp { .. }, DataType::Timestamp { .. }) => CastSafety::Lossy,
+
+        // Date conversions
+        (DataType::Int32, DataType::Date32) => CastSafety::Lossy,
+        (DataType::Date32, DataType::Int32) => CastSafety::Safe,
+        (DataType::Date32, DataType::Date64) => CastSafety::Safe,
+        (DataType::Date64, DataType::Date32) => CastSafety::Lossy,
+
+        // String/JSON conversions
+        (DataType::Utf8, DataType::List { .. }) => CastSafety::Lossy,
+        (DataType::Utf8, DataType::Struct { .. }) => CastSafety::Lossy,
+        (DataType::Binary, DataType::Utf8) => CastSafety::Unsafe,
+        (DataType::Utf8, DataType::Binary) => CastSafety::Safe,
+
+        (DataType::FixedSizeBinary(16), DataType::Utf8) => CastSafety::Safe,
+        (DataType::Utf8, DataType::FixedSizeBinary(16)) => CastSafety::Lossy,
+        (DataType::Binary, DataType::FixedSizeBinary(16)) => CastSafety::Lossy,
+
+        _ => CastSafety::Unsafe,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeltaStats {
+    /// Ratio of |delta| ≤ small_threshold (usually 1 or unit-sized)
+    pub small_delta_ratio: f32,
+    /// Fraction of deltas equal to mode_delta
+    pub mode_ratio: f32,
+    /// Fraction of rows belonging to longest uninterrupted delta run
+    pub long_run_ratio: f32,
+    /// Median of absolute deltas
+    pub median_abs_delta: f32,
+}
+
+pub struct ColumnStats<'a> {
+    pub sample_size: usize,
+    pub null_count: usize,
+    pub distinct_count: usize,
+    pub avg_length: Option<f32>,
+    pub sample_values: &'a dyn Array,
+    pub min_val: Option<i64>,
+    pub max_val: Option<i64>,
+    pub quantiles_i32: Option<[i32; 7]>, // p01, p05, p25, p50, p75, p95, p99
+    pub longest_run_ratio: Option<f32>,
+    pub delta_stats: Option<DeltaStats>,
+    pub entropy: f32,
+    pub temporal_mod_entropy: Option<f32>,
+    pub character_max_length: Option<i32>,
+    pub character_min_length: Option<i32>,
+    pub numeric_precision: Option<i32>,
+    pub numeric_scale: Option<i32>,
+    pub datetime_precision: Option<i32>,
+}
+
+impl<'a> ColumnStats<'a> {
+    pub fn new(array: &'a dyn Array) -> Self {
+        let sample_size = array.len();
+        let null_count = array.null_count();
+        let mut stats = Self {
+            sample_size,
+            null_count,
+            distinct_count: 0,
+            avg_length: None,
+            sample_values: array,
+            min_val: None,
+            max_val: None,
+            quantiles_i32: None,
+            longest_run_ratio: None,
+            delta_stats: None,
+            entropy: 0.0,
+            temporal_mod_entropy: None,
+            character_max_length: None,
+            character_min_length: None,
+            numeric_precision: None,
+            numeric_scale: None,
+            datetime_precision: None,
+        };
+
+        if sample_size == 0 || sample_size == null_count {
+            return stats;
+        }
+
+        match array.data_type() {
+            DataType::Utf8 | DataType::LargeUtf8 => {
+                let _ = Self::extract_stats_from_string_array(&mut stats);
+            }
+            DataType::Int32 | DataType::Int64 => {
+                let _ = Self::extract_stats_from_int_array(&mut stats);
+            }
+            _ => {}
+        }
+
+        stats
+    }
+
+    pub fn null_ratio(&self) -> f32 {
+        if self.sample_size == 0 {
+            0.0
+        } else {
+            self.null_count as f32 / self.sample_size as f32
+        }
+    }
+
+    fn extract_stats_from_int_array(stats: &mut ColumnStats) -> Result<(), NError> {
+        let values = stats
+            .sample_values
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or(ArrowError::CastError("Failed to cast to Int64Array".into()))?;
+
+        let mut distinct_set = HashSet::new();
+        let mut max_val = usize::MIN;
+        let mut min_val = usize::MAX;
+        for val in values.iter().flatten() {
+            distinct_set.insert(val);
+            max_val = max_val.max(val as usize);
+            min_val = min_val.min(val as usize);
+        }
+
+        stats.distinct_count = distinct_set.len();
+        stats.max_val = Some(max_val as i64);
+        stats.min_val = Some(min_val as i64);
+        stats.entropy = Self::normalized_int_entropy(values.iter().flatten());
+
+        Ok(())
+    }
+
+    fn extract_stats_from_string_array(stats: &mut ColumnStats) -> Result<(), NError> {
+        let values = stats
+            .sample_values
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .ok_or(ArrowError::CastError(
+                "Failed to cast to LargeStringArray".into(),
+            ))?;
+
+        let mut distinct_set = HashSet::new();
+        let mut total_len = 0;
+        let mut max_len = usize::MIN;
+        let mut min_len = usize::MAX;
+        for val in values.iter().flatten() {
+            distinct_set.insert(val);
+            total_len += val.len();
+            max_len = max_len.max(val.len());
+            min_len = min_len.min(val.len());
+        }
+
+        stats.distinct_count = distinct_set.len();
+        stats.character_max_length = Some(max_len as i32);
+        stats.character_min_length = Some(min_len as i32);
+        stats.avg_length = Some(total_len as f32 / (stats.sample_size - stats.null_count) as f32);
+        stats.entropy = Self::normalized_string_entropy(values.iter());
+
+        Ok(())
+    }
+
+    fn normalized_string_entropy<'b>(values: impl Iterator<Item = Option<&'b str>>) -> f32 {
+        let mut incident_counts: HashMap<char, usize> = HashMap::new();
+        let mut total_incidents = 0;
+
+        for val in values.flatten() {
+            for ch in val.chars() {
+                *incident_counts.entry(ch).or_insert(0) += 1;
+                total_incidents += 1;
+            }
+        }
+
+        if total_incidents == 0 {
+            return 0.0;
+        }
+
+        let mut entropy = 0.0;
+
+        for count in incident_counts.values() {
+            let p = *count as f32 / total_incidents as f32;
+
+            if p > 0.0 {
+                entropy -= p * p.log2();
+            }
+        }
+
+        entropy / (incident_counts.len() as f32).log2()
+    }
+
+    fn normalized_int_entropy(values: impl Iterator<Item = i64>) -> f32 {
+        let mut incident_counts: HashMap<i64, usize> = HashMap::new();
+        let mut total_incidents = 0;
+
+        let mut iter = values.into_iter();
+        let mut prev = match iter.next() {
+            Some(v) => v,
+            None => return 0.0,
+        };
+
+        for curr in iter {
+            let delta = curr - prev;
+            *incident_counts.entry(delta).or_insert(0) += 1;
+            total_incidents += 1;
+            prev = curr;
+        }
+
+        if total_incidents == 0 {
+            return 0.0;
+        }
+
+        let mut entropy = 0.0;
+
+        for count in incident_counts.values() {
+            let p = *count as f32 / total_incidents as f32;
+
+            if p > 0.0 {
+                entropy -= p * p.log2();
+            }
+        }
+
+        entropy / (incident_counts.len() as f32).log2()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PromotionResult {
+    pub dest_type: DataType,
+    pub confidence: f32,
+    pub nullable: bool,
+    pub character_maximum_length: Option<i32>,
+    pub numeric_precision: Option<i32>,
+    pub numeric_scale: Option<i32>,
+    pub datetime_precision: Option<i32>,
+}
+
+pub struct TypeLatticeResolver;
+
+impl TypeLatticeResolver {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn promote(
+        &self,
+        source: &DataType,
+        stats: &ColumnStats,
+    ) -> Result<PromotionResult, NError> {
+        let mut dest_type: DataType = source.clone();
+        let mut confidence = 0.98;
+        let mut datetime_precision = stats.datetime_precision;
+        let mut numeric_scale = stats.numeric_scale;
+        let mut numeric_precision = stats.numeric_precision;
+        let mut character_maximum_length = stats.character_max_length;
+
+        match source {
+            DataType::Utf8 | DataType::LargeUtf8 => {
+                let logp1 = self.detect_type_from_string(stats, &DataType::Utf8)?;
+                let logp2 = self.detect_type_from_string(stats, &DataType::FixedSizeBinary(16))?;
+                let logp3 = self.detect_type_from_string(stats, &DataType::Date32)?;
+                let logp4 = self.detect_type_from_string(stats, &DataType::Date64)?;
+                let logp5 =
+                    self.detect_type_from_string(stats, &DataType::Time32(TimeUnit::Millisecond))?;
+                let logp6 = self.detect_type_from_string(
+                    stats,
+                    &DataType::Timestamp(TimeUnit::Microsecond, None),
+                )?;
+                let logp7 = self.detect_type_from_string(
+                    stats,
+                    &DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                )?;
+
+                let result = self.decide(&[
+                    (DataType::Utf8, logp1),
+                    (DataType::FixedSizeBinary(16), logp2),
+                    (DataType::Date32, logp3),
+                    (DataType::Date64, logp4),
+                    (DataType::Time32(TimeUnit::Millisecond), logp5),
+                    (DataType::Timestamp(TimeUnit::Microsecond, None), logp6),
+                    (
+                        DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                        logp7,
+                    ),
+                ]);
+
+                if let Some((potent, conf)) = result {
+                    let agg_conf = cast_safety(source, &potent).score() * conf;
+                    if agg_conf >= 0.65 {
+                        dest_type = potent;
+                        match dest_type {
+                            DataType::Date32 => {
+                                datetime_precision = Some(0);
+                                numeric_precision = None;
+                                numeric_scale = None;
+                                character_maximum_length = None;
+                            }
+                            DataType::Time32(TimeUnit::Millisecond) => datetime_precision = Some(3),
+                            DataType::Date64 | DataType::Timestamp(_, _) => {
+                                datetime_precision = Some(6);
+                                numeric_precision = None;
+                                numeric_scale = None;
+                                character_maximum_length = None;
+                            }
+                            _ => {}
+                        }
+                        confidence = agg_conf;
+                    }
+                }
+            }
+            DataType::Int32 => {
+                // Scouting potential destination types: Obvious expectation is that date in int32 format will generate Date32
+                let logp1 = self.detect_time_from_int(stats, &DataType::Date32);
+                let logp2 = self.detect_time_from_int(stats, &DataType::Date64);
+                let logp3 = self.detect_time_from_int(stats, &DataType::Time32(TimeUnit::Second));
+                let logp4 =
+                    self.detect_time_from_int(stats, &DataType::Time32(TimeUnit::Millisecond));
+                let logp5 =
+                    self.detect_time_from_int(stats, &DataType::Time64(TimeUnit::Microsecond));
+                let logp6 =
+                    self.detect_time_from_int(stats, &DataType::Time64(TimeUnit::Nanosecond));
+
+                let result = self.decide(&[
+                    (DataType::Date32, logp1),
+                    (DataType::Date64, logp2),
+                    (DataType::Time32(TimeUnit::Second), logp3),
+                    (DataType::Time32(TimeUnit::Millisecond), logp4),
+                    (DataType::Time64(TimeUnit::Microsecond), logp5),
+                    (DataType::Time64(TimeUnit::Nanosecond), logp6),
+                ]);
+
+                if let Some((potent, conf)) = result {
+                    let agg_conf = cast_safety(source, &potent).score() * conf;
+                    if agg_conf >= 0.65 {
+                        dest_type = potent;
+                        match dest_type {
+                            DataType::Date32 | DataType::Time32(TimeUnit::Second) => {
+                                datetime_precision = Some(0);
+                                numeric_precision = None;
+                                numeric_scale = None;
+                            }
+                            DataType::Time32(TimeUnit::Millisecond) => datetime_precision = Some(3),
+                            DataType::Date64 | DataType::Time64(TimeUnit::Microsecond) => {
+                                datetime_precision = Some(6);
+                                numeric_precision = None;
+                                numeric_scale = None;
+                            }
+                            _ => {}
+                        }
+                        confidence = agg_conf;
+                    }
+                }
+            }
+
+            DataType::Int64 => {
+                let logp1 = self.detect_time_from_int(stats, &DataType::Date32);
+                let logp2 = self.detect_time_from_int(stats, &DataType::Date64);
+                let logp3 =
+                    self.detect_time_from_int(stats, &DataType::Timestamp(TimeUnit::Second, None));
+                let logp4 = self
+                    .detect_time_from_int(stats, &DataType::Timestamp(TimeUnit::Millisecond, None));
+                let logp5 = self
+                    .detect_time_from_int(stats, &DataType::Timestamp(TimeUnit::Microsecond, None));
+                let logp6 = self
+                    .detect_time_from_int(stats, &DataType::Timestamp(TimeUnit::Nanosecond, None));
+
+                let result = self.decide(&[
+                    (DataType::Date32, logp1),
+                    (DataType::Date64, logp2),
+                    (DataType::Timestamp(TimeUnit::Second, None), logp3),
+                    (DataType::Timestamp(TimeUnit::Millisecond, None), logp4),
+                    (DataType::Timestamp(TimeUnit::Microsecond, None), logp5),
+                    (DataType::Timestamp(TimeUnit::Nanosecond, None), logp6),
+                ]);
+
+                if let Some((potent, conf)) = result {
+                    let agg_conf = cast_safety(source, &potent).score() * conf;
+                    if agg_conf >= 0.65 {
+                        dest_type = potent;
+                        confidence = agg_conf;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        let nullable = stats.null_ratio() > 0.0;
+
+        Ok(PromotionResult {
+            dest_type,
+            confidence,
+            nullable,
+            character_maximum_length,
+            numeric_precision,
+            numeric_scale,
+            datetime_precision,
+        })
+    }
+    // Byte array Detection
+    fn detect_type_from_string(&self, stats: &ColumnStats, dest: &DataType) -> Result<f32, NError> {
+        let mut logp = match dest {
+            &DataType::Utf8 => -0.9,
+            DataType::FixedSizeBinary(16) => -1.5,
+            DataType::Date32 => -1.7,
+            DataType::Time32(TimeUnit::Millisecond) => -1.8,
+            DataType::Date64 => -1.9,
+            DataType::Timestamp(TimeUnit::Microsecond, None) => -2.1,
+            DataType::List(_) => -2.5,
+            _ => 0.0,
+        };
+
+        // Uuid signal
+        logp += self.uuid_likelihood(stats)?;
+        // Date32 signal
+        // Date64 signal
+        // Timestamp signal
+        // Time32 signal
+        logp += self.datetime_likelihood(stats, dest)?;
+
+        // Json signal
+        logp += self.json_likelihood(stats)?;
+
+        // Array/List signal
+        logp += self.array_likelihood(stats)?;
+
+        // Null penalty
+        // Logic: too few values give less signal to trust inference
+        let confidence = 1.0 - stats.null_ratio();
+
+        Ok(confidence * logp)
+    }
+
+    fn decide(&self, posteriors: &[(DataType, f32)]) -> Option<(DataType, f32)> {
+        let mut sorted = posteriors.to_vec();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        let m = sorted
+            .iter()
+            .map(|(_, b)| *b)
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let sum_m: f32 = sorted.iter().map(|(_, b)| ((*b) - m).exp()).sum();
+        let sorted: Vec<(DataType, f32)> = sorted
+            .into_iter()
+            .map(|(a, b)| {
+                let conf = (b - m) / sum_m;
+
+                (a, conf)
+            })
+            .collect();
+
+        let (best_t, best_p) = &sorted[0];
+        let (_, second_p) = sorted[1];
+        if best_p - second_p < 0.5 {
+            None
+        } else {
+            Some((best_t.clone(), *best_p))
+        }
+    }
+
+    fn uuid_likelihood(&self, stats: &ColumnStats) -> Result<f32, NError> {
+        if stats.character_min_length < Some(32) || stats.character_max_length != Some(45) {
+            return Ok(0.0);
+        }
+
+        let values = stats
+            .sample_values
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .ok_or(ArrowError::CastError(
+                "Failed to cast to LargeStringArray".into(),
+            ))?;
+
+        if values.iter().flatten().all(|s| {
+            let val = s
+                .replace("urn:uuid:", "")
+                .replace("-", "")
+                .replace("{", "")
+                .replace("}", "");
+
+            let val = val.trim();
+
+            Uuid::parse_str(val).is_ok()
+        }) {
+            return Ok(1.5);
+        }
+
+        Ok(0.0)
+    }
+
+    fn array_likelihood(&self, stats: &ColumnStats) -> Result<f32, NError> {
+        let values = stats
+            .sample_values
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .ok_or(ArrowError::CastError(
+                "Failed to cast to LargeStringArray".into(),
+            ))?;
+
+        // [[1, 2], [3, 4]]
+        // [1, 2, 3, 4]
+        // [1, "text", true]
+        // [{"a": 1}, {"b": 2}]
+        if values.iter().flatten().all(|s| {
+            let val = s.trim();
+            if (val.starts_with("[") && val.ends_with("]"))
+                || (val.starts_with("[[") && val.ends_with("]]"))
+            {
+                return true;
+            }
+            false
+        }) {
+            return Ok(2.9);
+        }
+
+        Ok(0.0)
+    }
+
+    fn json_likelihood(&self, stats: &ColumnStats) -> Result<f32, NError> {
+        let values = stats
+            .sample_values
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .ok_or(ArrowError::CastError(
+                "Failed to cast to LargeStringArray".into(),
+            ))?;
+
+        //
+        if values.iter().flatten().all(|s| {
+            let val = s.trim();
+            if val.starts_with("{") && val.ends_with("}") {
+                return true;
+            }
+            false
+        }) {
+            return Ok(1.0);
+        }
+
+        Ok(0.0)
+    }
+
+    fn datetime_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> Result<f32, NError> {
+        let values = stats
+            .sample_values
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .ok_or(ArrowError::CastError(
+                "Failed to cast to LargeStringArray".into(),
+            ))?;
+
+        let values = values.into_iter().flatten().collect::<Vec<&str>>();
+
+        match dest {
+            DataType::Date32 => {
+                let formats = [
+                    "%d%b%Y",
+                    "%y/%m/%d",
+                    "%Y-%m-%d",
+                    "%a, %d %b %Y",
+                    "%d/%b/%Y",
+                    "%Y%m%d%",
+                ];
+
+                if values.iter().all(|s| {
+                    formats
+                        .iter()
+                        .find_map(|fmt| NaiveDate::parse_from_str(s, fmt).ok())
+                        .is_some()
+                }) {
+                    return Ok(1.7);
+                }
+            }
+            DataType::Date64 => {
+                let formats = [
+                    "%d%b%Y%p%I%M%S",
+                    "%y/%m/%d %H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S",
+                    // RFC / logs
+                    "%a, %d %b %Y %H:%M:%S",
+                    "%d/%b/%Y:%H:%M:%S",
+                    "%Y%m%d%H%M%S",
+                ];
+
+                if values.iter().all(|s| {
+                    formats
+                        .iter()
+                        .find_map(|fmt| NaiveDate::parse_from_str(s, fmt).ok())
+                        .is_some()
+                }) {
+                    return Ok(1.9);
+                }
+            }
+            DataType::Time32(TimeUnit::Millisecond) => {
+                let formats = [
+                    "%p%I%M%S%.f",
+                    "%H:%M:%S%.fZ",
+                    "%H:%M:%S%.f%:z",
+                    "%H:%M:%S%.f",
+                    "%H:%M:%S",
+                    "%H:%M:%S%.f GMT",
+                    "%H:%M:%S%.f %z",
+                    "%H%M%S%.f",
+                ];
+
+                if values.iter().all(|s| {
+                    formats
+                        .iter()
+                        .find_map(|fmt| NaiveTime::parse_from_str(s, fmt).ok())
+                        .is_some()
+                }) {
+                    return Ok(1.8);
+                }
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, None) => {
+                let formats = [
+                    "%d%b%Y%p%I%M%S%.f",
+                    // ISO-8601 (T separator)
+                    "%Y-%m-%dT%H:%M:%S%.fZ",
+                    "%Y-%m-%dT%H:%M:%S%.f%:z",
+                    "%Y-%m-%dT%H:%M:%S%.f",
+                    // Space-separated
+                    "%Y-%m-%d %H:%M:%S%.f%:z",
+                    // RFC / logs
+                    "%a, %d %b %Y %H:%M:%S%.f GMT",
+                    "%d/%b/%Y:%H:%M:%S%.f %z",
+                    "%Y-%m-%d %H:%M:%S%.f",
+                    "%y/%m/%d %H:%M:%S%.f",
+                    "%Y%m%d%H%M%S%.f",
+                ];
+                if values.iter().all(|s| {
+                    formats
+                        .iter()
+                        .find_map(|fmt| NaiveDateTime::parse_from_str(s, fmt).ok())
+                        .is_some()
+                }) {
+                    return Ok(2.2);
+                }
+            }
+            _ => return Ok(0.0),
+        }
+
+        Ok(0.0)
+    }
+
+    fn detect_time_from_int(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        let mut logp = match dest {
+            DataType::Date32 => -1.2,
+            DataType::Date64 => -1.5,
+            DataType::Timestamp(TimeUnit::Second, _) => -1.5,
+            DataType::Timestamp(TimeUnit::Millisecond, _) => -1.7,
+            DataType::Timestamp(TimeUnit::Microsecond, _) => 1.8,
+            DataType::Timestamp(TimeUnit::Nanosecond, _) => -2.0,
+            _ => 0.0,
+        };
+
+        logp += self.epoch_likelihood(stats, dest);
+        logp += self.span_likelihood(stats, dest);
+        logp += self.quantile_cv_likelihood(stats, dest);
+        logp += self.delta_likelihood(stats, dest);
+        logp += self.modulo_entropy_likelihood(stats, dest);
+        logp += self.entropy_likelihood(stats, dest);
+        logp += self.delta_regularity_likelihood(stats, dest);
+        logp += self.delta_scale_likelihood(stats, dest);
+        logp += self.monotonic_run_likelihood(stats, dest);
+
+        // Null penalty
+        // Logic: too few values give less signal to trust inference
+        let confidence = 1.0 - stats.null_ratio();
+
+        confidence * logp
+    }
+
+    fn epoch_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        // Destructing min and max to find out
+        let (min, max) = match (stats.max_val, stats.max_val) {
+            (Some(min), Some(max)) if min < max => (min, max),
+            _ => return 0.0,
+        };
+
+        let in_range = match dest {
+            DataType::Time32(TimeUnit::Second) => {
+                (0..=86400).contains(&min) && (0..=86400).contains(&max)
+            }
+            DataType::Time32(TimeUnit::Millisecond) => {
+                (0..=86_400_000).contains(&min) && (0..=86_400_000).contains(&max)
+            }
+            DataType::Time64(TimeUnit::Microsecond) => {
+                (0..=86_400_000_000).contains(&min) && (0..=86_400_000_000).contains(&max)
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                (0..=86_400_000_000_000).contains(&min) && (0..=86_400_000_000_000).contains(&max)
+            }
+            DataType::Date32 => (-25567..=47482).contains(&min) && (-25567..=47482).contains(&max),
+            DataType::Date64 => {
+                (-2_208_988_800..=4_102_444_800).contains(&min)
+                    && (-2_208_988_800..=4_102_444_800).contains(&max)
+            }
+            DataType::Timestamp(TimeUnit::Second, _) => {
+                (-2_208_988_800..=4_102_444_800).contains(&min)
+                    && (-2_208_988_800..=4_102_444_800).contains(&max)
+            }
+            DataType::Timestamp(TimeUnit::Millisecond, _) => {
+                (-2_208_988_800_000..=4_102_444_800_000).contains(&min)
+                    && (-2_208_988_800_000..=4_102_444_800_000).contains(&max)
+            }
+            DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                (-2_208_988_800_000_000..=4_102_444_800_000_000).contains(&min)
+                    && (-2_208_988_800_000_000..=4_102_444_800_000_000).contains(&max)
+            }
+            DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+                (-2_208_988_800_000_000_000..=4_102_444_800_000_000_000).contains(&min)
+                    && (-2_208_988_800_000_000_000..=4_102_444_800_000_000_000).contains(&max)
+            }
+            _ => false,
+        };
+
+        if in_range { 1.2 } else { -2.0 }
+    }
+
+    fn span_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        // Destructing min and max to find out
+        let (min, max) = match (stats.max_val, stats.max_val) {
+            (Some(min), Some(max)) if min < max => (min as f64, max as f64),
+            _ => return 0.0,
+        };
+
+        // Span Sanity
+        // Logic: time spans cluster around human scales
+        // counters grow arbitrarily
+        let span = (max - min).abs().max(1.0);
+
+        let expected = match dest {
+            DataType::Time32(TimeUnit::Second) => 86_400., // 1 day
+            DataType::Time32(TimeUnit::Millisecond) => 86_400_000.,
+            DataType::Time64(TimeUnit::Microsecond) => 86_400_000_000.,
+            DataType::Time64(TimeUnit::Nanosecond) => 86_400_000_000_000.,
+            DataType::Date32 => 30.0, // 30 days
+            DataType::Date64 | DataType::Timestamp(TimeUnit::Second, _) => 3600., // 1h
+            DataType::Timestamp(TimeUnit::Millisecond, _) => 3_600_000.,
+            DataType::Timestamp(TimeUnit::Microsecond, _) => 3_600_000_000.,
+            DataType::Timestamp(TimeUnit::Nanosecond, _) => 3_600_000_000_000.,
+
+            _ => return 0.0,
+        };
+
+        let ratio = span / expected;
+
+        -((ratio.ln()).powi(2) as f32)
+    }
+
+    fn quantile_cv_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        let q = match stats.quantiles_i32 {
+            Some(q) => q,
+            None => return 0.0,
+        };
+
+        // Quantile spacing consistency {logic: time sampling tends to be regular(cron jobs), semi-regular,
+        // or noisy but continous while categorical or bucketed data tends to be uneven or with large plateaus}
+        // Penalizes buckets, enum ordinals, or zipf distributed ids
+        // Promotes logs, measurements, time series
+
+        let deltas: Vec<f32> = q
+            .windows(2)
+            .map(|w| (w[1] - w[0]) as f32)
+            .filter(|d| *d > 0.0)
+            .collect();
+
+        let mean = deltas.iter().sum::<f32>() / deltas.len() as f32;
+        let var = deltas.iter().map(|d| (*d - mean).powi(2)).sum::<f32>() / deltas.len() as f32;
+
+        let cv = var.sqrt() / mean.max(1.0);
+
+        match dest {
+            DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _)
+            | DataType::Time64(_)
+            | DataType::Time32(_) => {
+                if cv < 0.5 {
+                    0.6
+                } else {
+                    -0.4
+                }
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn delta_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        let ds = match &stats.delta_stats {
+            Some(d) => d,
+            None => return 0.0,
+        };
+
+        // Delta behaviour (day steps) {logic many +1 delta long runs depict counter,
+        // most small deltas with breaks depict time, and (or) occassional jumps depict logging}
+        // Penalizes counters as they exhibit perfect monotonicity
+        // Promotes time patterns as they are monotonic with noise
+
+        match dest {
+            DataType::Date32 => {
+                if ds.small_delta_ratio > 0.7 {
+                    0.8
+                } else {
+                    -0.4
+                }
+            }
+            DataType::Date64
+            | DataType::Timestamp(_, _)
+            | DataType::Time32(_)
+            | DataType::Time64(_) => {
+                if ds.small_delta_ratio > 0.85 {
+                    1.0
+                } else {
+                    -0.5
+                }
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn modulo_entropy_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        let h = match stats.temporal_mod_entropy {
+            Some(h) => h,
+            None => return 0.0,
+        };
+
+        // Modulo entropy (temporal unit signal)
+        // Logic: time has periodicity as counters dont wrap. Lower entropy shows cyclic structure of time
+        // Rejects IDs, Hashes, Random ints (high entropy)
+        // Accepts date, logs (low entropy)
+
+        match dest {
+            DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _)
+            | DataType::Time32(_)
+            | DataType::Time64(_) => {
+                if h < 0.8 {
+                    1.2
+                } else {
+                    -0.6
+                }
+            }
+            _ => 0.0,
+        }
+    }
+    fn entropy_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        match dest {
+            DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _)
+            | DataType::Time32(_)
+            | DataType::Time64(_) => {
+                if stats.entropy < 0.70 {
+                    0.2
+                } else {
+                    -0.2
+                }
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn delta_regularity_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        let ds = match &stats.delta_stats {
+            Some(ds) => ds,
+            None => return 0.0,
+        };
+
+        let mut logp = 0.0;
+
+        // Many small deltas imply time
+        if ds.small_delta_ratio > 0.6 {
+            logp += 0.6;
+        }
+
+        // Strong modal step implies clocked process
+        if ds.mode_ratio > 0.5 {
+            logp += 0.6;
+        }
+
+        // Long uninterrupted run implies logging window
+        if ds.long_run_ratio > 0.2 && ds.long_run_ratio < 0.8 {
+            logp += 0.4
+        }
+
+        match dest {
+            DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _)
+            | DataType::Time32(_)
+            | DataType::Time64(_) => logp,
+            _ => -logp * 0.7,
+        }
+    }
+
+    fn delta_scale_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        let ds = match &stats.delta_stats {
+            Some(ds) => ds,
+            None => return 0.0,
+        };
+
+        let median = ds.median_abs_delta.max(1.0);
+
+        let expected = match dest {
+            DataType::Date32 => 0.000012,
+            DataType::Date64
+            | DataType::Timestamp(TimeUnit::Second, _)
+            | DataType::Time32(TimeUnit::Second) => 1.0,
+            DataType::Timestamp(TimeUnit::Millisecond, _)
+            | DataType::Time32(TimeUnit::Millisecond) => 1_000.0,
+            DataType::Timestamp(TimeUnit::Microsecond, _)
+            | DataType::Time64(TimeUnit::Microsecond) => 1_000_000.0,
+            DataType::Timestamp(TimeUnit::Nanosecond, _)
+            | DataType::Time64(TimeUnit::Nanosecond) => 1_000_000.0,
+            _ => 0.0,
+        };
+
+        let ratio = median / expected;
+
+        -ratio.ln().abs()
+    }
+
+    fn monotonic_run_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
+        let lrr = match &stats.longest_run_ratio {
+            Some(ms) => ms,
+            None => return 0.0,
+        };
+
+        match dest {
+            DataType::Date32
+            | DataType::Date64
+            | DataType::Timestamp(_, _)
+            | DataType::Time32(_)
+            | DataType::Time64(_) => {
+                if *lrr > 0.3 {
+                    0.7
+                } else {
+                    -0.2
+                }
+            }
+            _ => {
+                if *lrr > 0.3 {
+                    -0.6
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
+
+pub fn cast_utf8_column(
+    batch: &mut RecordBatch,
+    column_name: &str,
+    dest: &DataType,
+) -> Result<(), NError> {
+    let schema = batch.schema();
+
+    let index = schema
+        .column_with_name(column_name)
+        .ok_or(ArrowError::SchemaError(format!(
+            "Column {} not found",
+            column_name
+        )))?;
+
+    let string_array = batch.column(index.0);
+
+    let cast_array = match dest {
+        DataType::FixedSizeBinary(16) => {
+            // Handling for UUID assuming 16-byte fixed size
+            utf8_to_uuid(string_array)?
+        }
+        DataType::Date32
+        | DataType::Date64
+        | DataType::Time32(_)
+        | DataType::Time64(_)
+        | DataType::Timestamp(_, _) => {
+            // Arrow inbuilt casting
+            let cast_options = CastOptions {
+                safe: false,
+                format_options: Default::default(),
+            };
+
+            cast_with_options(string_array, dest, &cast_options)?
+        }
+        _ => Err(ArrowError::CastError(format!(
+            "Unsupported cast from UTF8 to {:?}",
+            dest
+        )))?,
+    };
+
+    // Create new schema with updated field type
+    let mut fields: Vec<Field> = schema.fields.iter().map(|f| (**f).clone()).collect();
+    fields[index.0] = Field::new(
+        column_name,
+        DataType::FixedSizeBinary(16),
+        fields[index.0].is_nullable(),
+    );
+
+    let updated_schema = Arc::new(Schema::new(fields));
+
+    // Create new columns array with the cast column
+    let mut columns: Vec<Arc<dyn Array>> = batch.columns().to_vec();
+
+    columns[index.0] = cast_array;
+
+    *batch = RecordBatch::try_new(updated_schema, columns)?;
+
+    Ok(())
+}
+
+// Casting Utf8 to FixedSizeBinary(16) - UUID
+pub fn utf8_to_uuid(array: &ArrayRef) -> Result<ArrayRef, NError> {
+    let string_array =
+        array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or(ArrowError::CastError(
+                "Failed to cast to StringArray".into(),
+            ))?;
+
+    let mut builder = FixedSizeBinaryBuilder::new(16);
+
+    for i in 0..string_array.len() {
+        if string_array.is_null(i) {
+            builder.append_null();
+        } else {
+            let input = string_array.value(i);
+            let uuid = Uuid::parse_str(
+                &input
+                    .replace("urn:uuid:", "")
+                    .replace("-", "")
+                    .replace("{", "")
+                    .replace("}", ""),
+            )?;
+
+            builder.append_value(uuid.as_bytes())?;
+        }
+    }
+
+    Ok(Arc::new(builder.finish()))
+}

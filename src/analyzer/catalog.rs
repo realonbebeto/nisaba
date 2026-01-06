@@ -51,19 +51,13 @@ impl DataLocation {
     pub fn connection_string(&self) -> Result<String, NError> {
         match self.store_type {
             DataStoreType::Csv => match &self.dir_path {
-                Some(path) => Ok(format!(
-                    "Driver={{Microsoft Text Driver (*.txt; *.csv)}}; DBQ={};Extensions=asc,csv,tab,txt;",
-                    path
-                )),
+                Some(path) => Ok(path.clone()),
                 None => Err(NError::InvalidPath(
                     "Directory with CSVs not provided".into(),
                 )),
             },
             DataStoreType::Excel => match &self.dir_path {
-                Some(path) => Ok(format!(
-                    "Driver={{Microsoft Excel Driver (*.xls, *.xlsx, *.xlsm, *.xlsb)}};DBQ={};",
-                    path
-                )),
+                Some(path) => Ok(path.clone()),
                 None => Err(NError::InvalidPath(
                     "Directory with Excel workbooks not provided".into(),
                 )),
@@ -84,7 +78,9 @@ impl DataLocation {
                         ))
                     }
 
-                    _ => Err(NError::InvalidPath("Proper Postgres".into())),
+                    _ => Err(NError::InvalidPath(
+                        "Proper MySQL connection details not provided".into(),
+                    )),
                 }
             }
             DataStoreType::MongoDB => {

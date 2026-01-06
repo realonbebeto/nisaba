@@ -1,24 +1,24 @@
 use arrow::{
     array::{
-        Array, AsArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array, GenericListArray,
-        RecordBatch, StringArray, UInt64Array,
+        Array, AsArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array,
+        Int32Array, RecordBatch, StringArray,
     },
-    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
-    datatypes::{DataType, Field, Float32Type, Schema, UInt64Type},
+    datatypes::{DataType, Field, Float32Type, Int32Type, Schema},
     error::ArrowError,
 };
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use std::{collections::HashSet, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc};
 use uuid::Uuid;
 
 use crate::{
     analyzer::{
         AnalyzerConfig,
+        inference::FieldMetrics,
         report::{ClusterDef, FieldMatch},
         retriever::Storable,
     },
     error::NError,
-    types::{Matchable, extract_metadata, extract_sample_values},
+    types::Matchable,
 };
 
 #[derive(Debug, Clone)]
@@ -28,31 +28,40 @@ pub struct FieldDef {
     pub table_name: String,
     pub name: String,
     pub canonical_type: DataType,
-    pub metadata: HashSet<Option<String>>,
-    pub sample_values: [Option<String>; 17],
-    pub cardinality: Option<u64>,
+    pub type_confidence: Option<f32>,
+    pub cardinality: Option<f32>,
+    pub avg_byte_length: Option<f32>,
+    pub is_monotonic: bool,
+    pub char_class_signature: Option<[f32; 4]>, // [digit, alpha, whitespace, symbol]
+    pub column_default: Option<String>,
+    pub is_nullable: bool,
+    pub char_max_length: Option<i32>,
+    pub numeric_precision: Option<i32>,
+    pub numeric_scale: Option<i32>,
+    pub datetime_precision: Option<i32>,
 }
 
 impl std::fmt::Display for FieldDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let m = self
-            .metadata
-            .iter()
-            .map(|n| n.to_owned())
-            .collect::<Vec<Option<String>>>()
-            .iter()
-            .map(|s| s.clone().unwrap_or_default())
-            .collect::<Vec<String>>()
-            .join(" ");
         write!(
             f,
-            "table name: {} field name: {} data type: {} metadata: {}, cardinality: {}",
+            "table name: {} field name: {} data type: {}, cardinality: {}",
             self.table_name,
             self.name,
             self.canonical_type,
-            m,
             self.cardinality.unwrap_or_default()
         )
+    }
+}
+
+impl FieldDef {
+    pub fn enrich_from_arrow(&mut self, metrics: Option<&FieldMetrics>) {
+        if let Some(m) = metrics {
+            self.char_class_signature = Some(m.char_class_signature);
+            self.is_monotonic = m.monotonicity;
+            self.cardinality = Some(m.cardinality);
+            self.avg_byte_length = m.avg_byte_length;
+        }
     }
 }
 
@@ -169,62 +178,66 @@ impl Storable for FieldDef {
 
         let capacity = items.len();
 
-        // For metadata
-        let mut metadata_values = Vec::new();
-        let mut metadata_offsets = Vec::with_capacity(capacity + 1);
-        metadata_offsets.push(0i64);
-
-        // For sample values(fixed size list of 17)
-        let mut sample_values = Vec::with_capacity(capacity * 17);
-        let mut sample_nulls = vec![false; capacity * 17];
+        // For type confidence
+        let type_confidence_array = Float32Array::from(
+            items
+                .iter()
+                .map(|f| f.type_confidence)
+                .collect::<Vec<Option<f32>>>(),
+        );
 
         // For cardinality
-        let mut cardinalities = Vec::with_capacity(capacity);
-        let mut cardinality_nulls = Vec::with_capacity(capacity);
+        let cardinalities_array = Float32Array::from(
+            items
+                .iter()
+                .map(|f| f.cardinality)
+                .collect::<Vec<Option<f32>>>(),
+        );
+
+        // For average byte length
+        let avg_byte_lens_array = Float32Array::from(
+            items
+                .iter()
+                .map(|f| f.avg_byte_length)
+                .collect::<Vec<Option<f32>>>(),
+        );
+
+        // For monotonicity
+        let monotonic_flag_array =
+            BooleanArray::from(items.iter().map(|f| f.is_monotonic).collect::<Vec<bool>>());
+
+        // For char signature (fixed size list of 4)
+        let mut char_signatures = Vec::with_capacity(capacity * 4);
+        let mut char_signature_nulls = Vec::with_capacity(capacity);
+
+        let nullable_array =
+            BooleanArray::from(items.iter().map(|f| f.is_nullable).collect::<Vec<bool>>());
+
+        // Column Defaults
+        let column_defaults_array = StringArray::from(
+            items
+                .iter()
+                .map(|f| f.column_default.clone())
+                .collect::<Vec<Option<String>>>(),
+        );
+
+        let char_max_lengths_array = Int32Array::from(
+            items
+                .iter()
+                .map(|f| f.char_max_length)
+                .collect::<Vec<Option<i32>>>(),
+        );
 
         for field in items {
-            // Metadata list
-            for item in &field.metadata {
-                metadata_values.push(item.clone());
+            // Char signature
+            if let Some(sig) = &field.char_class_signature {
+                char_signatures.extend_from_slice(sig);
+                char_signature_nulls.push(true);
+            } else {
+                char_signatures.extend_from_slice(&[0.0f32; 4]);
+                char_signature_nulls.push(false);
             }
-            metadata_offsets.push(metadata_values.len() as i64);
-
-            // Sample values
-            let start_idx = sample_values.len();
-            for (i, sample) in field.sample_values.iter().enumerate() {
-                sample_values.push(sample.clone());
-                sample_nulls[start_idx + i] = sample.is_none();
-            }
-
-            // Cardinality
-            cardinalities.push(field.cardinality.unwrap_or_default());
-            cardinality_nulls.push(field.cardinality.is_none());
         }
-
-        let metadata_values_array = StringArray::from(metadata_values);
-        let metadata_list = GenericListArray::<i64>::try_new(
-            Arc::new(Field::new("item", DataType::Utf8, true)),
-            OffsetBuffer::new(ScalarBuffer::from(metadata_offsets)),
-            Arc::new(metadata_values_array),
-            None,
-        )?;
-
-        // SamplesArray
-        let samples_values_array = StringArray::from(sample_values);
-        let sample_nulls_buffer = NullBuffer::from(sample_nulls);
-        let samples_list = FixedSizeListArray::try_new(
-            Arc::new(Field::new("item", DataType::Utf8, true)),
-            17,
-            Arc::new(samples_values_array),
-            Some(sample_nulls_buffer),
-        )?;
-
-        // CardinalityArray
-        let cardinality_nulls_buffer = NullBuffer::from(cardinality_nulls);
-        let cardinality_array = UInt64Array::new(
-            ScalarBuffer::from(cardinalities),
-            Some(cardinality_nulls_buffer),
-        );
 
         let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
             items.iter().map(|item| {
@@ -248,9 +261,13 @@ impl Storable for FieldDef {
                 Arc::new(table_names),
                 Arc::new(names),
                 Arc::new(canonical_types),
-                Arc::new(metadata_list),
-                Arc::new(samples_list),
-                Arc::new(cardinality_array),
+                Arc::new(type_confidence_array),
+                Arc::new(cardinalities_array),
+                Arc::new(avg_byte_lens_array),
+                Arc::new(monotonic_flag_array),
+                Arc::new(column_defaults_array),
+                Arc::new(nullable_array),
+                Arc::new(char_max_lengths_array),
                 Arc::new(vectors),
             ],
         )
@@ -307,14 +324,58 @@ impl Storable for FieldDef {
                     "Failed to downcast canonical_type column".into(),
                 ))?;
 
-            let metadata_array = batch.column(5).as_list::<i64>();
+            //Type confidence
+            let type_confidence_array = batch
+                .column(5)
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or(ArrowError::CastError(
+                    "Failed to downcast type_confidence column".into(),
+                ))?;
 
-            let sample_values_array = batch.column(6).as_fixed_size_list();
+            // Cardinality
+            let cardinality_array = batch.column(6).as_primitive::<Float32Type>();
 
-            let cardinality_array = batch.column(7).as_primitive::<UInt64Type>();
+            // Avg Byte Len
+            let avg_byte_len_array = batch.column(7).as_primitive::<Float32Type>();
+
+            // Monotonicity
+            let monotonicity_array =
+                batch
+                    .column(8)
+                    .as_boolean_opt()
+                    .ok_or(ArrowError::CastError(
+                        "Failed to downcast monotonicity".into(),
+                    ))?;
+
+            // Class signature
+            let class_signature_array = batch.column(9).as_fixed_size_list();
+
+            // Column Default
+            let column_default_array = batch.column(10).as_string::<i64>();
+
+            // Nullable
+            let nullable_array = batch
+                .column(11)
+                .as_boolean_opt()
+                .ok_or(ArrowError::CastError(
+                    "Failed to downcast is nullable column".into(),
+                ))?;
+
+            // Char Max Length
+            let char_max_len_array = batch.column(12).as_primitive::<Int32Type>();
+
+            // Numeric precision
+            let numeric_precision_array = batch.column(13).as_primitive::<Int32Type>();
+
+            // Numeric scale
+            let numeric_scale_array = batch.column(14).as_primitive::<Int32Type>();
+
+            // Datetime precision
+            let datetime_precision_array = batch.column(15).as_primitive::<Int32Type>();
 
             let distances = batch
-                .column(8)
+                .column(13)
                 .as_any()
                 .downcast_ref::<Float32Array>()
                 .ok_or(ArrowError::CastError(
@@ -331,14 +392,70 @@ impl Storable for FieldDef {
 
                 let canonical_type = DataType::from_str(canonical_type_array.value(row_idx))?;
 
-                let metadata = extract_metadata(metadata_array, row_idx)?;
-
-                let sample_values = extract_sample_values(sample_values_array, row_idx)?;
+                let type_confidence = if type_confidence_array.is_null(row_idx) {
+                    None
+                } else {
+                    Some(type_confidence_array.value(row_idx))
+                };
 
                 let cardinality = if cardinality_array.is_null(row_idx) {
                     None
                 } else {
                     Some(cardinality_array.value(row_idx))
+                };
+
+                let avg_byte_length = if avg_byte_len_array.is_null(row_idx) {
+                    None
+                } else {
+                    Some(avg_byte_len_array.value(row_idx))
+                };
+
+                let is_monotonic = monotonicity_array.value(row_idx);
+
+                let char_class_signature = if class_signature_array.is_null(row_idx) {
+                    None
+                } else {
+                    let values = class_signature_array.value(row_idx);
+                    let values = values.as_primitive::<Float32Type>();
+
+                    Some([
+                        values.value(0),
+                        values.value(1),
+                        values.value(2),
+                        values.value(3),
+                    ])
+                };
+
+                let column_default = if column_default_array.is_null(row_idx) {
+                    None
+                } else {
+                    Some(column_default_array.value(row_idx).to_owned())
+                };
+
+                let is_nullable = nullable_array.value(row_idx);
+
+                let char_max_length = if char_max_len_array.is_null(row_idx) {
+                    None
+                } else {
+                    Some(char_max_len_array.value(row_idx))
+                };
+
+                let numeric_precision = if numeric_precision_array.is_null(row_idx) {
+                    None
+                } else {
+                    Some(numeric_precision_array.value(row_idx))
+                };
+
+                let numeric_scale = if numeric_scale_array.is_null(row_idx) {
+                    None
+                } else {
+                    Some(numeric_scale_array.value(row_idx))
+                };
+
+                let datetime_precision = if datetime_precision_array.is_null(row_idx) {
+                    None
+                } else {
+                    Some(datetime_precision_array.value(row_idx))
                 };
 
                 let confidence = distances.value(row_idx);
@@ -349,9 +466,17 @@ impl Storable for FieldDef {
                     table_name,
                     name,
                     canonical_type,
-                    metadata,
-                    sample_values,
+                    type_confidence,
                     cardinality,
+                    avg_byte_length,
+                    is_monotonic,
+                    char_class_signature,
+                    column_default,
+                    is_nullable,
+                    char_max_length,
+                    numeric_precision,
+                    numeric_scale,
+                    datetime_precision,
                 };
 
                 schemas.push(FieldMatch { schema, confidence });

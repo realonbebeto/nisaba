@@ -1,6 +1,5 @@
 pub mod calculation;
 pub mod catalog;
-pub mod conversion;
 pub mod inference;
 pub mod probe;
 pub mod report;

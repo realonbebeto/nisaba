@@ -1,9 +1,6 @@
-use arrow::{
-    array::{Array, AsArray, FixedSizeListArray, GenericListArray},
-    datatypes::{DataType, Field},
-};
+use arrow::datatypes::{DataType, Field};
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 mod field;
 mod table;
@@ -11,7 +8,7 @@ mod table;
 pub use field::FieldDef;
 pub use table::TableDef;
 
-use crate::{analyzer::retriever::Storable, error::NError};
+use crate::analyzer::retriever::Storable;
 
 pub trait Matchable {
     type Id: Clone;
@@ -56,38 +53,4 @@ pub fn get_field_defs() -> Vec<Field> {
             true,
         ),
     ]
-}
-
-pub fn extract_metadata(
-    list_array: &GenericListArray<i64>,
-    index: usize,
-) -> Result<HashSet<Option<String>>, NError> {
-    let values = list_array.value(index);
-    let values = values.as_string::<i64>();
-
-    let mut metadata = HashSet::new();
-    for i in 0..values.len() {
-        if values.is_null(i) {
-            metadata.insert(None);
-        } else {
-            metadata.insert(Some(values.value(i).to_string()));
-        }
-    }
-
-    Ok(metadata)
-}
-
-pub fn extract_sample_values(
-    fixed_list: &FixedSizeListArray,
-    index: usize,
-) -> Result<[Option<String>; 17], NError> {
-    let values = fixed_list.value(index);
-    let values = values.as_string::<i64>();
-
-    let mut sample_values: [Option<String>; 17] = Default::default();
-    for (i, item) in values.iter().enumerate() {
-        sample_values[i] = item.map(|v| v.to_string());
-    }
-
-    Ok(sample_values)
 }

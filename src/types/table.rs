@@ -1,10 +1,10 @@
 use arrow::{
     array::{
         Array, ArrayRef, AsArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array,
-        GenericListArray, RecordBatch, StringArray, StructArray, UInt64Array,
+        GenericListArray, RecordBatch, StringArray, StructArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
-    datatypes::{DataType, Field, Fields, Float32Type, Schema, UInt64Type},
+    datatypes::{DataType, Field, Fields, Float32Type, Int32Type, Schema},
     error::ArrowError,
 };
 use nalgebra::{DVector, Vector1};
@@ -19,7 +19,7 @@ use crate::{
         retriever::Storable,
     },
     error::NError,
-    types::{FieldDef, Matchable, extract_metadata, extract_sample_values, get_field_defs},
+    types::{FieldDef, Matchable, get_field_defs},
 };
 
 #[derive(Debug)]
@@ -315,15 +315,6 @@ fn build_fields_array(
     let mut table_names = Vec::with_capacity(capacity);
     let mut canonical_types = Vec::with_capacity(capacity);
 
-    // For metadata
-    let mut metadata_values = Vec::new();
-    let mut metadata_offsets = Vec::with_capacity(capacity + 1);
-    metadata_offsets.push(0i64);
-
-    // For sample values(fixed size list of 17)
-    let mut sample_values = Vec::with_capacity(capacity * 17);
-    let mut sample_nulls = vec![false; capacity * 17];
-
     // For cardinality
     let mut cardinalities = Vec::with_capacity(capacity);
     let mut cardinality_nulls = Vec::with_capacity(capacity);
@@ -348,19 +339,6 @@ fn build_fields_array(
             table_names.push(field.table_name.clone());
             canonical_types.push(field.canonical_type.to_string());
 
-            // Metadata list
-            for item in &field.metadata {
-                metadata_values.push(item.clone());
-            }
-            metadata_offsets.push(metadata_values.len() as i64);
-
-            // Sample values
-            let start_idx = sample_values.len();
-            for (i, sample) in field.sample_values.iter().enumerate() {
-                sample_values.push(sample.clone());
-                sample_nulls[start_idx + i] = sample.is_none();
-            }
-
             // Cardinality
             cardinalities.push(field.cardinality.unwrap_or_default());
             cardinality_nulls.push(field.cardinality.is_none());
@@ -383,28 +361,9 @@ fn build_fields_array(
     let table_name_array = StringArray::from(table_names);
     let canonical_type_array = StringArray::from(canonical_types);
 
-    // MetadataArray
-    let metadata_values_array = StringArray::from(metadata_values);
-    let metadata_list = GenericListArray::<i64>::try_new(
-        Arc::new(Field::new("item", DataType::Utf8, true)),
-        OffsetBuffer::new(ScalarBuffer::from(metadata_offsets)),
-        Arc::new(metadata_values_array),
-        None,
-    )?;
-
-    // SamplesArray
-    let samples_values_array = StringArray::from(sample_values);
-    let sample_nulls_buffer = NullBuffer::from(sample_nulls);
-    let samples_list = FixedSizeListArray::try_new(
-        Arc::new(Field::new("item", DataType::Utf8, true)),
-        17,
-        Arc::new(samples_values_array),
-        Some(sample_nulls_buffer),
-    )?;
-
     // CardinalityArray
     let cardinality_nulls_buffer = NullBuffer::from(cardinality_nulls);
-    let cardinality_array = UInt64Array::new(
+    let cardinality_array = Float32Array::new(
         ScalarBuffer::from(cardinalities),
         Some(cardinality_nulls_buffer),
     );
@@ -427,8 +386,6 @@ fn build_fields_array(
             Arc::new(name_array),
             Arc::new(table_name_array),
             Arc::new(canonical_type_array),
-            Arc::new(metadata_list),
-            Arc::new(samples_list),
             Arc::new(cardinality_array),
             Arc::new(embedding_list),
         ],
@@ -466,9 +423,24 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, NErro
     let name_col = struct_array.column(2).as_string::<i64>();
     let table_name_col = struct_array.column(3).as_string::<i64>();
     let canonical_type_col = struct_array.column(4).as_string::<i64>();
-    let metadata_col = struct_array.column(5).as_list::<i64>();
-    let sample_values_col = struct_array.column(6).as_fixed_size_list();
-    let cardinality_col = struct_array.column(7).as_primitive::<UInt64Type>();
+
+    let type_confidence_col = struct_array.column(5).as_primitive::<Float32Type>();
+    let cardinality_col = struct_array.column(6).as_primitive::<Float32Type>();
+
+    let avg_byte_len_col = struct_array.column(7).as_primitive::<Float32Type>();
+    let is_monotonic_col = struct_array.column(8).as_boolean();
+
+    let char_class_signature_col = struct_array.column(9).as_fixed_size_list();
+    let column_default_col = struct_array.column(10).as_string::<i64>();
+    let is_nullable_col = struct_array.column(11).as_boolean();
+
+    let char_max_len_col = struct_array.column(12).as_primitive::<Int32Type>();
+
+    let numeric_precision_col = struct_array.column(13).as_primitive::<Int32Type>();
+
+    let numeric_scale_col = struct_array.column(14).as_primitive::<Int32Type>();
+
+    let datetime_precision_col = struct_array.column(15).as_primitive::<Int32Type>();
 
     for i in 0..num_fields {
         let id = Uuid::from_slice(id_col.value(i))?;
@@ -476,13 +448,71 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, NErro
         let table_name = table_name_col.value(i).to_string();
         let name = name_col.value(i).to_string();
         let canonical_type: DataType = canonical_type_col.value(i).parse()?;
-        let metadata = extract_metadata(metadata_col, i)?;
-        let sample_values = extract_sample_values(sample_values_col, i)?;
+
+        let type_confidence = if type_confidence_col.is_null(i) {
+            None
+        } else {
+            Some(type_confidence_col.value(i))
+        };
 
         let cardinality = if cardinality_col.is_null(i) {
             None
         } else {
             Some(cardinality_col.value(i))
+        };
+
+        let avg_byte_length = if avg_byte_len_col.is_null(i) {
+            None
+        } else {
+            Some(avg_byte_len_col.value(i))
+        };
+
+        let is_monotonic = is_monotonic_col.value(i);
+
+        let char_class_signature = if char_class_signature_col.is_null(i) {
+            None
+        } else {
+            let values = char_class_signature_col.value(i);
+            let values = values.as_primitive::<Float32Type>();
+
+            Some([
+                values.value(0),
+                values.value(1),
+                values.value(2),
+                values.value(3),
+            ])
+        };
+
+        let column_default = if column_default_col.is_null(i) {
+            None
+        } else {
+            Some(column_default_col.value(i).to_owned())
+        };
+
+        let is_nullable = is_nullable_col.value(i);
+
+        let char_max_length = if char_max_len_col.is_null(i) {
+            None
+        } else {
+            Some(char_max_len_col.value(i))
+        };
+
+        let numeric_precision = if numeric_precision_col.is_null(i) {
+            None
+        } else {
+            Some(numeric_precision_col.value(i))
+        };
+
+        let numeric_scale = if numeric_scale_col.is_null(i) {
+            None
+        } else {
+            Some(numeric_scale_col.value(i))
+        };
+
+        let datetime_precision = if datetime_precision_col.is_null(i) {
+            None
+        } else {
+            Some(datetime_precision_col.value(i))
         };
 
         field_defs.push(FieldDef {
@@ -491,9 +521,17 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, NErro
             name,
             table_name,
             canonical_type,
-            metadata,
-            sample_values,
+            type_confidence,
             cardinality,
+            avg_byte_length,
+            is_monotonic,
+            char_class_signature,
+            column_default,
+            is_nullable,
+            char_max_length,
+            numeric_precision,
+            numeric_scale,
+            datetime_precision,
         });
     }
 
