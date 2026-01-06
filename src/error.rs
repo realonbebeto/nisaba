@@ -17,9 +17,11 @@ pub enum NError {
     #[error(transparent)]
     ParquetError(#[from] parquet::errors::ParquetError),
     #[error("Unable to access dir/path provided: {0}")]
-    InvalidPath(String),
+    InvalidDetail(String),
     #[error("Path/Dir provided misses files required: {0}")]
-    DirEmpty(String),
+    EmptyResource(String),
+    #[error("{0}")]
+    MissingDetail(String),
     #[error(transparent)]
     MongoDBError(#[from] mongodb::error::Error),
     #[error(transparent)]

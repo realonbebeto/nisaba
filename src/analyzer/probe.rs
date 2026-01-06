@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     analyzer::{
         calculation::{ArrowGraph, leiden_communities},
-        catalog::DataLocation,
+        catalog::StorageConfig,
         inference::InferenceEngineRegistry,
         report::{
             ClusterDef, ClusterItem, FieldCluster, FieldMatch, FieldResult, MatchExplanation,
@@ -61,11 +61,11 @@ impl std::fmt::Debug for SchemaAnalyzer {
 }
 
 impl SchemaAnalyzer {
-    pub async fn analyze(&self, locations: Vec<DataLocation>) -> Result<Vec<TableCluster>, NError> {
+    pub async fn analyze(&self, configs: Vec<StorageConfig>) -> Result<Vec<TableCluster>, NError> {
         // Take inputs (multiple collections/tables)
         // E.g. Vec[Collection/Table], Vec[Collection/Table], Vec[Collection/Table] ...
 
-        let tbl_defs = self.inference_engine.discover_ecosystem(locations)?;
+        let tbl_defs = self.inference_engine.discover_ecosystem(configs)?;
 
         self.index_schemas(&tbl_defs).await?;
 

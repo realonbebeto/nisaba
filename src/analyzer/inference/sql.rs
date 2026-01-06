@@ -15,7 +15,7 @@ use sqlx::{MySqlPool, PgPool, Row, SqlitePool};
 
 use crate::{
     analyzer::{
-        catalog::{DataLocation, DataStoreType},
+        catalog::{StorageBackend, StorageConfig},
         inference::{
             SchemaInferenceEngine, SourceField, compute_field_metrics, convert_into_table_defs,
             promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
@@ -52,12 +52,12 @@ impl SQLInferenceEngine {
         self
     }
 
-    async fn infer_from_mysql(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let conn_str = location.connection_string()?;
+    async fn infer_from_mysql(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let conn_str = config.connection_string()?;
 
         let pool = MySqlPool::connect(&conn_str).await?;
 
-        let source_fields = read_mysql_fields(&pool, location).await?;
+        let source_fields = read_mysql_fields(&pool, config).await?;
 
         let mut table_defs = convert_into_table_defs(source_fields)?;
 
@@ -85,12 +85,12 @@ impl SQLInferenceEngine {
         Ok(table_defs)
     }
 
-    async fn infer_from_postgres(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let conn_str = location.connection_string()?;
+    async fn infer_from_postgres(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let conn_str = config.connection_string()?;
 
         let pool = PgPool::connect(&conn_str).await?;
 
-        let source_fields = read_postgres_fields(&pool, location).await?;
+        let source_fields = read_postgres_fields(&pool, config).await?;
 
         let mut table_defs = convert_into_table_defs(source_fields)?;
 
@@ -118,13 +118,13 @@ impl SQLInferenceEngine {
         Ok(table_defs)
     }
 
-    async fn infer_from_sqlite(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let conn_str = location.connection_string()?;
+    async fn infer_from_sqlite(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let conn_str = config.connection_string()?;
 
         let pool = SqlitePool::connect(&conn_str).await?;
 
         // Execute query and create result set
-        let source_fields = read_sqlite_fields(&pool, location).await?;
+        let source_fields = read_sqlite_fields(&pool, config).await?;
 
         let mut table_defs = convert_into_table_defs(source_fields)?;
 
@@ -200,22 +200,22 @@ impl SQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for SQLInferenceEngine {
-    fn infer_schema(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        match location.store_type {
-            DataStoreType::MySQL => block_on(self.infer_from_mysql(location)),
-            DataStoreType::PostgreSQL => block_on(self.infer_from_postgres(location)),
-            DataStoreType::SQLite => block_on(self.infer_from_sqlite(location)),
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        match config.backend {
+            StorageBackend::MySQL => block_on(self.infer_from_mysql(config)),
+            StorageBackend::PostgreSQL => block_on(self.infer_from_postgres(config)),
+            StorageBackend::SQLite => block_on(self.infer_from_sqlite(config)),
             _ => Err(NError::Unsupported(format!(
                 "{:?} SQL store provided unsupported by SQL engine",
-                location.store_type
+                config.backend
             ))),
         }
     }
 
-    fn can_handle(&self, store_type: &DataStoreType) -> bool {
+    fn can_handle(&self, backend: &StorageBackend) -> bool {
         matches!(
-            store_type,
-            DataStoreType::MySQL | DataStoreType::PostgreSQL | DataStoreType::SQLite
+            backend,
+            StorageBackend::MySQL | StorageBackend::PostgreSQL | StorageBackend::SQLite
         )
     }
 
@@ -243,9 +243,9 @@ async fn read_postgres_table(
 
 async fn read_postgres_fields(
     pool: &PgPool,
-    location: &DataLocation,
+    config: &StorageConfig,
 ) -> Result<Vec<SourceField>, NError> {
-    let silo_id = format!("{}-{}", location.store_type, location.host.clone().unwrap());
+    let silo_id = format!("{}-{}", config.backend, config.host.clone().unwrap());
 
     let query = "SELECT table_schema, 
                                 table_name, 
@@ -262,7 +262,7 @@ async fn read_postgres_fields(
                         WHERE table_schema = $1";
 
     let rows = sqlx::query(query)
-        .bind(location.namespace.clone().unwrap_or("public".into()))
+        .bind(config.namespace.clone().unwrap_or("public".into()))
         .fetch_all(pool)
         .await?;
 
@@ -377,9 +377,9 @@ async fn read_mysql_table(
 
 async fn read_mysql_fields(
     pool: &MySqlPool,
-    location: &DataLocation,
+    config: &StorageConfig,
 ) -> Result<Vec<SourceField>, NError> {
-    let silo_id = format!("{}-{}", location.store_type, location.host.clone().unwrap());
+    let silo_id = format!("{}-{}", config.backend, config.host.clone().unwrap());
 
     let query = "SELECT 
                             table_schema, 
@@ -450,13 +450,9 @@ async fn read_sqlite_table(
 
 async fn read_sqlite_fields(
     pool: &SqlitePool,
-    location: &DataLocation,
+    config: &StorageConfig,
 ) -> Result<Vec<SourceField>, NError> {
-    let silo_id = format!(
-        "{}-{}",
-        location.store_type,
-        location.dir_path.clone().unwrap()
-    );
+    let silo_id = format!("{}-{}", config.backend, config.dir_path.clone().unwrap());
 
     let mut source_fields = Vec::new();
 

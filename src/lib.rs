@@ -4,7 +4,7 @@ mod types;
 
 pub use analyzer::{
     AnalyzerConfig, ConflictScorer, SchemaAnalyzerBuilder,
-    catalog::{DataLocation, DataStoreType},
+    catalog::{StorageBackend, StorageConfig},
     inference::{
         FileInferenceEngine, InferenceEngineRegistry, NoSQLInferenceEngine, SQLInferenceEngine,
     },

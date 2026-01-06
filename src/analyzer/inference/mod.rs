@@ -22,7 +22,7 @@ pub use nosql::NoSQLInferenceEngine;
 pub use sql::SQLInferenceEngine;
 
 use crate::{
-    analyzer::catalog::{DataLocation, DataStoreType},
+    analyzer::catalog::{StorageBackend, StorageConfig},
     error::NError,
     types::{FieldDef, TableDef},
 };
@@ -97,10 +97,10 @@ impl InferenceEngineRegistry {
     ///
     /// The `get_engine` function returns an `Option` containing a reference to a `dyn
     /// SchemaInferenceEngine` trait object based on the provided `DataStoreType`.
-    pub fn get_engine(&self, store_type: &DataStoreType) -> Option<&dyn SchemaInferenceEngine> {
+    pub fn get_engine(&self, backend: &StorageBackend) -> Option<&dyn SchemaInferenceEngine> {
         self.engines
             .values()
-            .find(|eng| eng.can_handle(store_type))
+            .find(|eng| eng.can_handle(backend))
             .map(|eng| eng.as_ref())
     }
 
@@ -118,27 +118,24 @@ impl InferenceEngineRegistry {
     ///
     /// A Result containing a vector of TableSchema objects or an NError if there is an issue with the
     /// operation.
-    pub fn infer_schema(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let engine = self.get_engine(&location.store_type).ok_or_else(|| {
+    pub fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let engine = self.get_engine(&config.backend).ok_or_else(|| {
             NError::Unsupported(format!(
                 "No engine available for store type: {:?}",
-                location.store_type
+                config.backend
             ))
         })?;
 
-        let table_defs = engine.infer_schema(location)?;
+        let table_defs = engine.infer_schema(config)?;
 
         Ok(table_defs)
     }
 
-    pub fn discover_ecosystem(
-        &self,
-        locations: Vec<DataLocation>,
-    ) -> Result<Vec<TableDef>, NError> {
+    pub fn discover_ecosystem(&self, configs: Vec<StorageConfig>) -> Result<Vec<TableDef>, NError> {
         let mut table_defs = Vec::new();
 
-        for location in locations {
-            table_defs.extend(self.infer_schema(&location)?);
+        for config in configs {
+            table_defs.extend(self.infer_schema(&config)?);
         }
 
         Ok(table_defs)
@@ -148,10 +145,10 @@ impl InferenceEngineRegistry {
 /// Trait for schema inference engines
 pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
     /// Infer schema from a data source
-    fn infer_schema(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError>;
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError>;
 
     /// Check if this engine can handle the given data source
-    fn can_handle(&self, store_type: &DataStoreType) -> bool;
+    fn can_handle(&self, backend: &StorageBackend) -> bool;
 
     /// Get the name of the inference engine
     fn engine_name(&self) -> &str;

@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     analyzer::{
-        catalog::{DataLocation, DataStoreType},
+        catalog::{StorageBackend, StorageConfig},
         inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
     },
     error::NError,
@@ -44,12 +44,9 @@ impl NoSQLInferenceEngine {
         self
     }
 
-    async fn infer_from_mongodb(
-        &self,
-        location: &DataLocation,
-    ) -> Result<Vec<SourceField>, NError> {
-        let silo_id = format!("{}-{}", location.store_type, Uuid::now_v7());
-        let conn_str = location.connection_string()?;
+    async fn infer_from_mongodb(&self, config: &StorageConfig) -> Result<Vec<SourceField>, NError> {
+        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
+        let conn_str = config.connection_string()?;
         let client_options = ClientOptions::parse(&conn_str).await?;
         let db_name = client_options.clone().default_database.unwrap();
 
@@ -127,19 +124,19 @@ impl NoSQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for NoSQLInferenceEngine {
-    fn infer_schema(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let source_fields = match location.store_type {
-            DataStoreType::MongoDB => block_on(self.infer_from_mongodb(location)),
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let source_fields = match config.backend {
+            StorageBackend::MongoDB => block_on(self.infer_from_mongodb(config)),
             _ => Err(NError::Unsupported(format!(
                 "{:?} NoSQL store provided unsupported by NoSQL engine",
-                location.store_type
+                config.backend
             ))),
         };
 
         convert_into_table_defs(source_fields?)
     }
-    fn can_handle(&self, store_type: &DataStoreType) -> bool {
-        matches!(store_type, DataStoreType::MongoDB)
+    fn can_handle(&self, backend: &StorageBackend) -> bool {
+        matches!(backend, StorageBackend::MongoDB)
     }
     fn engine_name(&self) -> &str {
         "NoSQL-MongDB"

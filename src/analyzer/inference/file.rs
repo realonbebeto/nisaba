@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     analyzer::{
-        catalog::{DataLocation, DataStoreType},
+        catalog::{StorageBackend, StorageConfig},
         inference::{
             SchemaInferenceEngine, SourceField, compute_field_metrics, convert_into_table_defs,
             promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
@@ -62,16 +62,16 @@ impl FileInferenceEngine {
         self
     }
 
-    fn infer_from_csv(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let dir_str = location.connection_string()?;
-        let silo_id = format!("{}-{}", location.store_type, Uuid::now_v7());
+    fn infer_from_csv(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let dir_str = config.connection_string()?;
+        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
 
-        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidPath(e.to_string()))?;
+        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidDetail(e.to_string()))?;
 
         let mut table_defs: Vec<TableDef> = Vec::new();
 
         for entry in entries {
-            let entry = entry.map_err(|e| NError::InvalidPath(e.to_string()))?;
+            let entry = entry.map_err(|e| NError::InvalidDetail(e.to_string()))?;
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("csv") {
@@ -178,18 +178,18 @@ impl FileInferenceEngine {
         Ok(table_defs)
     }
 
-    fn infer_from_excel(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let dir_str = &location.dir_path.clone().ok_or(NError::InvalidPath(
+    fn infer_from_excel(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let dir_str = &config.dir_path.clone().ok_or(NError::InvalidDetail(
             "Directory with Excel workbooks not provided".into(),
         ))?;
         // Get all excel filenames
-        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidPath(e.to_string()))?;
-        let silo_id = format!("{}-{}", location.store_type, Uuid::now_v7());
+        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidDetail(e.to_string()))?;
+        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
 
         let mut table_defs: Vec<TableDef> = Vec::new();
 
         for entry in entries {
-            let entry = entry.map_err(|e| NError::InvalidPath(e.to_string()))?;
+            let entry = entry.map_err(|e| NError::InvalidDetail(e.to_string()))?;
             let path = entry.path();
 
             if path
@@ -202,7 +202,7 @@ impl FileInferenceEngine {
                 })
                 .unwrap_or(false)
             {
-                let record_batches = read_excel_to_polars(&path)?;
+                let record_batches = read_excel_to_record_batch(&path)?;
 
                 for (mut batch, table_name) in record_batches {
                     let schema = batch.schema();
@@ -294,17 +294,17 @@ impl FileInferenceEngine {
         Ok(table_defs)
     }
 
-    fn infer_from_parquet(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        let dir_str = location.connection_string()?;
+    fn infer_from_parquet(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        let dir_str = config.connection_string()?;
 
         // Get all parquet filenames
-        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidPath(e.to_string()))?;
-        let silo_id = format!("{}-{}", location.store_type, Uuid::now_v7());
+        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidDetail(e.to_string()))?;
+        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
 
         let mut table_defs: Vec<TableDef> = Vec::new();
 
         for entry in entries {
-            let entry = entry.map_err(|e| NError::InvalidPath(e.to_string()))?;
+            let entry = entry.map_err(|e| NError::InvalidDetail(e.to_string()))?;
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("parquet") {
@@ -404,30 +404,21 @@ impl FileInferenceEngine {
 }
 
 impl SchemaInferenceEngine for FileInferenceEngine {
-    fn infer_schema(&self, location: &DataLocation) -> Result<Vec<TableDef>, NError> {
-        match location.store_type {
-            DataStoreType::Csv => self.infer_from_csv(location),
-            DataStoreType::Excel => self.infer_from_excel(location),
-            DataStoreType::Parquet => self.infer_from_parquet(location),
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+        match config.backend {
+            StorageBackend::Csv => self.infer_from_csv(config),
+            StorageBackend::Excel => self.infer_from_excel(config),
+            StorageBackend::Parquet => self.infer_from_parquet(config),
             _ => Err(NError::Unsupported(format!(
                 "{:?} file store unsupported by File engine",
-                location.store_type
+                config.backend
             )))?,
         }
     }
 
-    fn can_handle(&self, store_type: &DataStoreType) -> bool {
-        matches!(
-            store_type,
-            DataStoreType::Avro
-                | DataStoreType::Csv
-                | DataStoreType::Excel
-                | DataStoreType::Json
-                | DataStoreType::JsonL
-                | DataStoreType::Feather
-                | DataStoreType::Orc
-                | DataStoreType::Parquet
-        )
+    fn can_handle(&self, backend: &StorageBackend) -> bool {
+        matches!(backend, |StorageBackend::Csv| StorageBackend::Excel
+            | StorageBackend::Parquet)
     }
 
     fn engine_name(&self) -> &str {
@@ -507,7 +498,7 @@ impl Workbook {
     }
 }
 
-fn read_excel_to_polars(path: &PathBuf) -> Result<Vec<(RecordBatch, String)>, NError> {
+fn read_excel_to_record_batch(path: &PathBuf) -> Result<Vec<(RecordBatch, String)>, NError> {
     // Open workbook
     let mut workbook = Workbook::open(path)?;
     let sheet_names = workbook.sheet_names();
