@@ -40,6 +40,8 @@ pub enum NError {
     XlsxError(#[from] calamine::XlsxError),
     #[error(transparent)]
     SqlxError(#[from] sqlx::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Debug, thiserror::Error)]

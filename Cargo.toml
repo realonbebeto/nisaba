@@ -25,10 +25,7 @@ categories = [
 
 [dependencies]
 anyhow = "1.0.100"
-arrow = { version = "56.2.0", features = [
-    "csv",
-    "json",
-], default-features = false }
+arrow = { version = "56.2.0", features = ["csv"], default-features = false }
 calamine = { version = "0.32.0", default-features = false, features = [
     "chrono",
 ] }

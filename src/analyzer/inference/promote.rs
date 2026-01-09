@@ -1,8 +1,5 @@
 use arrow::{
-    array::{
-        Array, ArrayRef, FixedSizeBinaryBuilder, Int64Array, LargeStringArray, RecordBatch,
-        StringArray,
-    },
+    array::{Array, ArrayRef, FixedSizeBinaryBuilder, Int64Array, RecordBatch, StringArray},
     compute::{CastOptions, cast_with_options},
     datatypes::{DataType, Field, Schema, TimeUnit},
     error::ArrowError,
@@ -22,10 +19,17 @@ use crate::error::NError;
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum CastSafety {
     /// No data loss, always succeedds
+    /// No failure, no semantic change, but representation differs
+    /// e.g. Date32 ↔ Timestamp(day)
     Safe,
     /// Potential precision loss or truncation
-    Lossy,
+    /// May succeed, May fail, depending on values, but no loss if it succeeds but still information can be lost
+    /// e.g. f64 → f32, i64 → i32 (truncate)
+    /// e.g. string → uuid, string → date
+    /// e.g. string → int, float → int
+    FallibleLossy,
     /// May fail at runtime
+    // Semantically dangerous even if it succeeds
     Unsafe,
 }
 
@@ -34,8 +38,8 @@ impl CastSafety {
     pub fn score(&self) -> f32 {
         match self {
             Self::Safe => 0.98,
-            Self::Lossy => 0.7,
-            &Self::Unsafe => 0.1,
+            Self::FallibleLossy => 0.86,
+            &Self::Unsafe => 0.48,
         }
     }
 }
@@ -48,27 +52,49 @@ pub fn cast_safety(from: &DataType, to: &DataType) -> CastSafety {
     }
 
     match (from, to) {
+        //Widening Numeric Conversions
+        (DataType::Int8, DataType::Int16 | DataType::Int32 | DataType::Int64) => CastSafety::Safe,
+
+        (DataType::Int16, DataType::Int32 | DataType::Int64) => CastSafety::Safe,
+
+        (DataType::Int32, DataType::Int64) => CastSafety::Safe,
+
+        // Narrowing Numeric Conversions
+        (DataType::Int64, DataType::Int32 | DataType::Int16 | DataType::Int8) => {
+            CastSafety::FallibleLossy
+        }
+
+        (
+            DataType::Decimal32(_, _),
+            DataType::Decimal64(_, _) | DataType::Decimal128(_, _) | DataType::Decimal256(_, _),
+        ) => CastSafety::Safe,
+
         //Timestamp conversions
-        (DataType::Int64, DataType::Timestamp { .. }) => CastSafety::Lossy,
+        (DataType::Int64, DataType::Timestamp { .. }) => CastSafety::FallibleLossy,
         (DataType::Timestamp { .. }, DataType::Int64) => CastSafety::Safe,
         (DataType::Timestamp(u1, ..), DataType::Timestamp(u2, ..)) if u1 == u2 => CastSafety::Safe,
-        (DataType::Timestamp { .. }, DataType::Timestamp { .. }) => CastSafety::Lossy,
+        (DataType::Timestamp { .. }, DataType::Timestamp { .. }) => CastSafety::FallibleLossy,
 
         // Date conversions
-        (DataType::Int32, DataType::Date32) => CastSafety::Lossy,
+        (DataType::Int32, DataType::Date32) => CastSafety::FallibleLossy,
         (DataType::Date32, DataType::Int32) => CastSafety::Safe,
         (DataType::Date32, DataType::Date64) => CastSafety::Safe,
-        (DataType::Date64, DataType::Date32) => CastSafety::Lossy,
+        (DataType::Date64, DataType::Date32) => CastSafety::FallibleLossy,
 
         // String/JSON conversions
-        (DataType::Utf8, DataType::List { .. }) => CastSafety::Lossy,
-        (DataType::Utf8, DataType::Struct { .. }) => CastSafety::Lossy,
+        (DataType::Utf8, DataType::List { .. }) => CastSafety::FallibleLossy,
+        (DataType::Utf8, DataType::Struct { .. }) => CastSafety::FallibleLossy,
         (DataType::Binary, DataType::Utf8) => CastSafety::Unsafe,
         (DataType::Utf8, DataType::Binary) => CastSafety::Safe,
 
         (DataType::FixedSizeBinary(16), DataType::Utf8) => CastSafety::Safe,
-        (DataType::Utf8, DataType::FixedSizeBinary(16)) => CastSafety::Lossy,
-        (DataType::Binary, DataType::FixedSizeBinary(16)) => CastSafety::Lossy,
+        (DataType::Utf8, DataType::FixedSizeBinary(16)) => CastSafety::FallibleLossy,
+        (DataType::Utf8, DataType::Timestamp(_, _)) => CastSafety::FallibleLossy,
+        (
+            DataType::Utf8,
+            DataType::Date32 | DataType::Date64 | DataType::Time32(_) | DataType::Time64(_),
+        ) => CastSafety::FallibleLossy,
+        (DataType::Binary, DataType::FixedSizeBinary(16)) => CastSafety::FallibleLossy,
 
         _ => CastSafety::Unsafe,
     }
@@ -183,9 +209,9 @@ impl<'a> ColumnStats<'a> {
         let values = stats
             .sample_values
             .as_any()
-            .downcast_ref::<LargeStringArray>()
+            .downcast_ref::<StringArray>()
             .ok_or(ArrowError::CastError(
-                "Failed to cast to LargeStringArray".into(),
+                "Failed to cast to StringArray".into(),
             ))?;
 
         let mut distinct_set = HashSet::new();
@@ -332,7 +358,7 @@ impl TypeLatticeResolver {
                 ]);
 
                 if let Some((potent, conf)) = result {
-                    let agg_conf = cast_safety(source, &potent).score() * conf;
+                    let agg_conf = (cast_safety(source, &potent).score() * conf).sqrt();
                     if agg_conf >= 0.65 {
                         dest_type = potent;
                         match dest_type {
@@ -377,7 +403,7 @@ impl TypeLatticeResolver {
                 ]);
 
                 if let Some((potent, conf)) = result {
-                    let agg_conf = cast_safety(source, &potent).score() * conf;
+                    let agg_conf = (cast_safety(source, &potent).score() * conf).sqrt();
                     if agg_conf >= 0.65 {
                         dest_type = potent;
                         match dest_type {
@@ -421,7 +447,7 @@ impl TypeLatticeResolver {
                 ]);
 
                 if let Some((potent, conf)) = result {
-                    let agg_conf = cast_safety(source, &potent).score() * conf;
+                    let agg_conf = (cast_safety(source, &potent).score() * conf).sqrt();
                     if agg_conf >= 0.65 {
                         dest_type = potent;
                         confidence = agg_conf;
@@ -447,17 +473,18 @@ impl TypeLatticeResolver {
     fn detect_type_from_string(&self, stats: &ColumnStats, dest: &DataType) -> Result<f32, NError> {
         let mut logp = match dest {
             &DataType::Utf8 => -0.9,
-            DataType::FixedSizeBinary(16) => -1.5,
-            DataType::Date32 => -1.7,
-            DataType::Time32(TimeUnit::Millisecond) => -1.8,
-            DataType::Date64 => -1.9,
-            DataType::Timestamp(TimeUnit::Microsecond, None) => -2.1,
-            DataType::List(_) => -2.5,
+            DataType::FixedSizeBinary(16) => -1.61,
+            DataType::Date32 => -2.12,
+            DataType::Time32(TimeUnit::Millisecond) => -3.22,
+            DataType::Date64 => -2.81,
+            DataType::Timestamp(TimeUnit::Microsecond, None) => -1.90,
+            DataType::List(_) => -3.51,
             _ => 0.0,
         };
 
         // Uuid signal
         logp += self.uuid_likelihood(stats)?;
+
         // Date32 signal
         // Date64 signal
         // Timestamp signal
@@ -481,16 +508,22 @@ impl TypeLatticeResolver {
         let mut sorted = posteriors.to_vec();
         sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
+        // Mormalizaton - log-sum-exp normalization
+        // 1. Pick the maximum
+        // 2. Perform a maximum shift by doing a difference with all elements
+        // 3. Exponent on all elements
+        // 4. Probability is the ratio of the result over the sum of all elements
         let m = sorted
             .iter()
             .map(|(_, b)| *b)
             .fold(f32::NEG_INFINITY, f32::max);
 
         let sum_m: f32 = sorted.iter().map(|(_, b)| ((*b) - m).exp()).sum();
+
         let sorted: Vec<(DataType, f32)> = sorted
             .into_iter()
             .map(|(a, b)| {
-                let conf = (b - m) / sum_m;
+                let conf = (b - m).exp() / sum_m;
 
                 (a, conf)
             })
@@ -498,7 +531,9 @@ impl TypeLatticeResolver {
 
         let (best_t, best_p) = &sorted[0];
         let (_, second_p) = sorted[1];
-        if best_p - second_p < 0.5 {
+
+        // 2 points more than the p-value conventional threshold
+        if (best_p - second_p) < 0.07 {
             None
         } else {
             Some((best_t.clone(), *best_p))
@@ -513,9 +548,9 @@ impl TypeLatticeResolver {
         let values = stats
             .sample_values
             .as_any()
-            .downcast_ref::<LargeStringArray>()
+            .downcast_ref::<StringArray>()
             .ok_or(ArrowError::CastError(
-                "Failed to cast to LargeStringArray".into(),
+                "Failed to cast to StringArray".into(),
             ))?;
 
         if values.iter().flatten().all(|s| {
@@ -529,7 +564,8 @@ impl TypeLatticeResolver {
 
             Uuid::parse_str(val).is_ok()
         }) {
-            return Ok(1.5);
+            // 15% markup as a show of confidence
+            return Ok(1.61 * 1.15);
         }
 
         Ok(0.0)
@@ -539,9 +575,9 @@ impl TypeLatticeResolver {
         let values = stats
             .sample_values
             .as_any()
-            .downcast_ref::<LargeStringArray>()
+            .downcast_ref::<StringArray>()
             .ok_or(ArrowError::CastError(
-                "Failed to cast to LargeStringArray".into(),
+                "Failed to cast to StringArray".into(),
             ))?;
 
         // [[1, 2], [3, 4]]
@@ -557,7 +593,7 @@ impl TypeLatticeResolver {
             }
             false
         }) {
-            return Ok(2.9);
+            return Ok(3.51);
         }
 
         Ok(0.0)
@@ -567,9 +603,9 @@ impl TypeLatticeResolver {
         let values = stats
             .sample_values
             .as_any()
-            .downcast_ref::<LargeStringArray>()
+            .downcast_ref::<StringArray>()
             .ok_or(ArrowError::CastError(
-                "Failed to cast to LargeStringArray".into(),
+                "Failed to cast to StringArray".into(),
             ))?;
 
         //
@@ -580,7 +616,7 @@ impl TypeLatticeResolver {
             }
             false
         }) {
-            return Ok(1.0);
+            return Ok(0.9);
         }
 
         Ok(0.0)
@@ -590,10 +626,8 @@ impl TypeLatticeResolver {
         let values = stats
             .sample_values
             .as_any()
-            .downcast_ref::<LargeStringArray>()
-            .ok_or(ArrowError::CastError(
-                "Failed to cast to LargeStringArray".into(),
-            ))?;
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| ArrowError::CastError("Failed to cast to StringArray".into()))?;
 
         let values = values.into_iter().flatten().collect::<Vec<&str>>();
 
@@ -614,7 +648,7 @@ impl TypeLatticeResolver {
                         .find_map(|fmt| NaiveDate::parse_from_str(s, fmt).ok())
                         .is_some()
                 }) {
-                    return Ok(1.7);
+                    return Ok(2.12);
                 }
             }
             DataType::Date64 => {
@@ -635,7 +669,7 @@ impl TypeLatticeResolver {
                         .find_map(|fmt| NaiveDate::parse_from_str(s, fmt).ok())
                         .is_some()
                 }) {
-                    return Ok(1.9);
+                    return Ok(2.81);
                 }
             }
             DataType::Time32(TimeUnit::Millisecond) => {
@@ -656,7 +690,7 @@ impl TypeLatticeResolver {
                         .find_map(|fmt| NaiveTime::parse_from_str(s, fmt).ok())
                         .is_some()
                 }) {
-                    return Ok(1.8);
+                    return Ok(3.22);
                 }
             }
             DataType::Timestamp(TimeUnit::Microsecond, None) => {
@@ -681,7 +715,8 @@ impl TypeLatticeResolver {
                         .find_map(|fmt| NaiveDateTime::parse_from_str(s, fmt).ok())
                         .is_some()
                 }) {
-                    return Ok(2.2);
+                    // 10% Markup as a show of confidence
+                    return Ok(1.90 * 1.10);
                 }
             }
             _ => return Ok(0.0),
@@ -692,12 +727,12 @@ impl TypeLatticeResolver {
 
     fn detect_time_from_int(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         let mut logp = match dest {
-            DataType::Date32 => -1.2,
-            DataType::Date64 => -1.5,
-            DataType::Timestamp(TimeUnit::Second, _) => -1.5,
+            DataType::Date32 => -2.12,
+            DataType::Date64 => -2.81,
+            DataType::Timestamp(TimeUnit::Second, _) => -1.90,
             DataType::Timestamp(TimeUnit::Millisecond, _) => -1.7,
-            DataType::Timestamp(TimeUnit::Microsecond, _) => 1.8,
-            DataType::Timestamp(TimeUnit::Nanosecond, _) => -2.0,
+            DataType::Timestamp(TimeUnit::Microsecond, _) => -1.8,
+            DataType::Timestamp(TimeUnit::Nanosecond, _) => -2.5,
             _ => 0.0,
         };
 
@@ -1041,11 +1076,7 @@ pub fn cast_utf8_column(
 
     // Create new schema with updated field type
     let mut fields: Vec<Field> = schema.fields.iter().map(|f| (**f).clone()).collect();
-    fields[index.0] = Field::new(
-        column_name,
-        DataType::FixedSizeBinary(16),
-        fields[index.0].is_nullable(),
-    );
+    fields[index.0] = Field::new(column_name, dest.clone(), fields[index.0].is_nullable());
 
     let updated_schema = Arc::new(Schema::new(fields));
 

@@ -1,13 +1,19 @@
 use arrow::{
     array::{
-        Array, AsArray, GenericStringArray, LargeBinaryArray, LargeStringArray, RecordBatch,
-        StringArray,
+        Array, AsArray, Date32Array, Date64Array, FixedSizeBinaryArray, GenericStringArray,
+        Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray,
+        RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
-    datatypes::{DataType, Field, Int64Type, Schema, TimeUnit, TimestampNanosecondType},
+    datatypes::{
+        DataType, Field, Int16Type, Int32Type, Int64Type, Schema, TimeUnit,
+        TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+        TimestampSecondType,
+    },
     error::ArrowError,
 };
 use std::{
     collections::{HashMap, HashSet},
+    str::FromStr,
     sync::Arc,
 };
 use uuid::Uuid;
@@ -176,12 +182,12 @@ pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef
         return Ok(Vec::new());
     }
 
-    let fields: Vec<FieldDef> = schemas
+    let fields: Result<Vec<FieldDef>, NError> = schemas
         .into_iter()
         .map(|v| {
             let is_nullable = v.is_nullable.trim().eq_ignore_ascii_case("yes");
 
-            FieldDef {
+            Ok(FieldDef {
                 id: Uuid::now_v7(),
                 silo_id: v.silo_id,
                 name: v.column_name,
@@ -191,7 +197,7 @@ pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef
                     v.numeric_precision,
                     v.numeric_scale,
                     v.datetime_precision,
-                ),
+                )?,
                 type_confidence: None,
                 cardinality: None,
                 avg_byte_length: None,
@@ -203,9 +209,11 @@ pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef
                 numeric_precision: v.numeric_precision,
                 numeric_scale: v.numeric_scale,
                 datetime_precision: v.datetime_precision,
-            }
+            })
         })
         .collect();
+
+    let fields = fields?;
 
     let mut map: HashMap<String, TableDef> = HashMap::new();
 
@@ -231,72 +239,100 @@ fn sql_to_arrow_type(
     numeric_precision: Option<i32>,
     numeric_scale: Option<i32>,
     datetime_precision: Option<i32>,
-) -> DataType {
-    match data_type.to_lowercase().trim() {
+) -> Result<DataType, NError> {
+    let normalized = data_type.to_lowercase();
+    let normalized = &normalized.trim();
+    match *normalized {
         // Signed Integer Types
-        "tinyint" => DataType::Int8,
-        "integer" | "int" | "int4" | "serial4" | "serial" => DataType::Int32,
-        "smallint" | "int2" | "serial2" | "smallserial" => DataType::Int16,
-
-        "bigint" => DataType::Int64,
+        "tinyint" | "int8" => Ok(DataType::Int8),
+        "integer" | "int" | "int4" | "serial4" | "serial" | "int32" => Ok(DataType::Int32),
+        "smallint" | "int2" | "serial2" | "smallserial" | "int16" => Ok(DataType::Int16),
+        "bigint" | "int64" => Ok(DataType::Int64),
         // TODO: For array, the subtype can be picked
-        "array" | "vector" | "tsvector" => {
-            DataType::List(Arc::new(Field::new("item", DataType::Utf8, false)))
-        }
+        "array" | "vector" | "tsvector" => Ok(DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::Utf8,
+            false,
+        )))),
 
         //Boolean
-        "bool" | "boolean" => DataType::Boolean,
+        "bool" | "boolean" => Ok(DataType::Boolean),
         "numeric" | "decimal" => {
             let precision = numeric_precision.unwrap_or(38) as u8;
             let scale = numeric_scale.unwrap_or(10) as i8;
 
-            DataType::Decimal128(precision, scale)
+            Ok(DataType::Decimal128(precision, scale))
         }
 
-        "float2" => DataType::Float16,
-        "real" | "float4" => DataType::Float32,
-        "double" | "float" | "float8" => DataType::Float64,
-        "date" => DataType::Date32,
-        "bytea" => DataType::Binary,
-        "uuid" => DataType::FixedSizeBinary(16),
-        "jsonb" => DataType::LargeBinary,
-        "json" | "text" => DataType::LargeUtf8,
+        "float2" | "float16" => Ok(DataType::Float16),
+        "real" | "float4" | "float32" => Ok(DataType::Float32),
+        "double" | "float" | "float8" | "float64" => Ok(DataType::Float64),
+        "date" | "date32" => Ok(DataType::Date32),
+        "date64" => Ok(DataType::Date64),
+        "bytea" | "binary" => Ok(DataType::Binary),
+        "uuid" => Ok(DataType::FixedSizeBinary(16)),
+        "jsonb" | "largebinary" => Ok(DataType::LargeBinary),
+        "json" | "text" => Ok(DataType::Utf8),
         "time" | "timetz" => {
             if let Some(p) = datetime_precision {
                 match p {
-                    0 => DataType::Time32(TimeUnit::Second),
-                    1..=3 => DataType::Time32(TimeUnit::Millisecond),
-                    4..=6 => DataType::Time64(TimeUnit::Microsecond),
-                    _ => DataType::Time32(TimeUnit::Microsecond),
+                    0 => Ok(DataType::Time32(TimeUnit::Second)),
+                    1..=3 => Ok(DataType::Time32(TimeUnit::Millisecond)),
+                    4..=6 => Ok(DataType::Time64(TimeUnit::Microsecond)),
+                    _ => Ok(DataType::Time32(TimeUnit::Microsecond)),
                 }
             } else {
-                DataType::Time32(TimeUnit::Microsecond)
+                Ok(DataType::Time32(TimeUnit::Microsecond))
             }
         }
 
         "timestamp" | "timestamptz" => {
             if let Some(p) = datetime_precision {
                 match p {
-                    0 => DataType::Timestamp(TimeUnit::Second, None),
-                    1..=3 => DataType::Timestamp(TimeUnit::Millisecond, None),
-                    4..=6 => DataType::Timestamp(TimeUnit::Microsecond, None),
-                    _ => DataType::Timestamp(TimeUnit::Microsecond, None),
+                    0 => Ok(DataType::Timestamp(TimeUnit::Second, None)),
+                    1..=3 => Ok(DataType::Timestamp(TimeUnit::Millisecond, None)),
+                    4..=6 => Ok(DataType::Timestamp(TimeUnit::Microsecond, None)),
+                    _ => Ok(DataType::Timestamp(TimeUnit::Microsecond, None)),
                 }
             } else {
-                DataType::Timestamp(TimeUnit::Microsecond, None)
+                Ok(DataType::Timestamp(TimeUnit::Microsecond, None))
             }
         }
 
         // Unsigned Integer Types
-        "uint8" => DataType::UInt8,
-        "uint16" => DataType::UInt16,
-        "uint32" => DataType::UInt32,
-        "uint64" => DataType::UInt64,
+        "uint8" => Ok(DataType::UInt8),
+        "uint16" => Ok(DataType::UInt16),
+        "uint32" => Ok(DataType::UInt32),
+        "uint64" => Ok(DataType::UInt64),
         // TODO: it probably maps to Decimal
-        "uint128" => DataType::UInt64,
-        "character" | "char" | "character varying" | "varchar" | "string" => DataType::Utf8,
-        "null" => DataType::Null,
-        _ => DataType::Utf8,
+        "uint128" => Ok(DataType::UInt64),
+        "character" | "char" | "character varying" | "varchar" | "string" | "utf8" => {
+            Ok(DataType::Utf8)
+        }
+        "null" => Ok(DataType::Null),
+
+        // Complex Arrow String to Arrow
+        "Utf8View" => Ok(DataType::Utf8View),
+        s if s.starts_with("timestamp(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("decimal256(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("decimal128") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("decimal64(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("decimal32(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("list(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("largelist(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("largelistview(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("listview(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("fixedsizelist(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("time64(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("time32(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("duration(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("interval(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("struct(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("union(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("dictionary(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("map(") => Ok(DataType::from_str(data_type)?),
+        s if s.starts_with("runendencoded(") => Ok(DataType::from_str(data_type)?),
+        _ => Ok(DataType::Utf8),
     }
 }
 
@@ -320,8 +356,11 @@ pub fn compute_field_metrics(batch: &RecordBatch) -> Result<HashMap<String, Fiel
         let column = batch.column(index);
 
         let char_class_signature = compute_char_class_signature(column);
+
         let monotonicity = detect_monotonicity(column);
+
         let avg_byte_length = compute_avg_byte_length(column)?;
+
         let cardinality = compute_cardinality(column)?;
 
         metrics.insert(
@@ -394,7 +433,31 @@ fn detect_monotonicity(samples: &dyn Array) -> bool {
     }
 
     match samples.data_type() {
-        DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+        DataType::Int16 => {
+            let samples = samples.as_primitive::<Int16Type>();
+
+            let mut values: Vec<i16> = (0..samples.len())
+                .filter(|&i| !samples.is_null(i))
+                .map(|i| samples.value(i))
+                .collect();
+
+            values.sort_unstable();
+
+            values.windows(2).all(|w| w[1] > w[0])
+        }
+        DataType::Int32 => {
+            let samples = samples.as_primitive::<Int32Type>();
+
+            let mut values: Vec<i32> = (0..samples.len())
+                .filter(|&i| !samples.is_null(i))
+                .map(|i| samples.value(i))
+                .collect();
+
+            values.sort_unstable();
+
+            values.windows(2).all(|w| w[1] > w[0])
+        }
+        DataType::Int64 => {
             let samples = samples.as_primitive::<Int64Type>();
 
             let mut values: Vec<i64> = (0..samples.len())
@@ -403,9 +466,42 @@ fn detect_monotonicity(samples: &dyn Array) -> bool {
                 .collect();
 
             values.sort_unstable();
+
             values.windows(2).all(|w| w[1] > w[0])
         }
-        DataType::Timestamp { .. } => {
+        DataType::Timestamp(TimeUnit::Second, _) => {
+            let timestamps = samples.as_primitive::<TimestampSecondType>();
+
+            let mut values: Vec<i64> = (0..timestamps.len())
+                .filter(|&i| !timestamps.is_null(i))
+                .map(|i| timestamps.value(i))
+                .collect();
+
+            values.sort_unstable();
+            values.windows(2).all(|w| w[1] > w[0])
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            let timestamps = samples.as_primitive::<TimestampMillisecondType>();
+
+            let mut values: Vec<i64> = (0..timestamps.len())
+                .filter(|&i| !timestamps.is_null(i))
+                .map(|i| timestamps.value(i))
+                .collect();
+
+            values.sort_unstable();
+            values.windows(2).all(|w| w[1] > w[0])
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            let timestamps = samples.as_primitive::<TimestampMicrosecondType>();
+            let mut values: Vec<i64> = (0..timestamps.len())
+                .filter(|&i| !timestamps.is_null(i))
+                .map(|i| timestamps.value(i))
+                .collect();
+
+            values.sort_unstable();
+            values.windows(2).all(|w| w[1] > w[0])
+        }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
             let timestamps = samples.as_primitive::<TimestampNanosecondType>();
 
             let mut values: Vec<i64> = (0..timestamps.len())
@@ -429,9 +525,85 @@ fn compute_cardinality(samples: &dyn Array) -> Result<f32, NError> {
         return Ok(1.0);
     }
 
-    let values: HashSet<_> = samples.as_string::<i64>().iter().flatten().collect();
+    macro_rules! count_unique_vals {
+        ($arr:expr, $array_type:ty) => {{
+            let arr = $arr
+                .as_any()
+                .downcast_ref::<$array_type>()
+                .ok_or(ArrowError::CastError(format!(
+                    "Failed to cast to {}",
+                    stringify!($array_type)
+                )))?;
 
-    let cc = values.len() as f32 / samples.len() as f32;
+            let mut values: HashSet<_> = HashSet::new();
+
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    values.insert(arr.value(i));
+                }
+            }
+
+            values.len()
+        }};
+    }
+
+    let unique_count = match samples.data_type() {
+        DataType::Null => 0,
+        DataType::Binary => {
+            let values: HashSet<&[u8]> = samples.as_binary::<i32>().iter().flatten().collect();
+            values.len()
+        }
+        DataType::BinaryView => {
+            let values: HashSet<&[u8]> = samples.as_binary_view().iter().flatten().collect();
+
+            values.len()
+        }
+        DataType::LargeBinary => count_unique_vals!(samples, LargeBinaryArray),
+        DataType::Boolean => 2,
+        DataType::Utf8 | DataType::Utf8View => {
+            let values: HashSet<_> = samples.as_string::<i32>().iter().flatten().collect();
+
+            values.len()
+        }
+        DataType::LargeUtf8 => count_unique_vals!(samples, LargeStringArray),
+        DataType::Int8 => count_unique_vals!(samples, Int8Array),
+        DataType::Int16 => count_unique_vals!(samples, Int16Array),
+        DataType::Int32 => count_unique_vals!(samples, Int32Array),
+        DataType::Int64 => count_unique_vals!(samples, Int64Array),
+        DataType::UInt8 => count_unique_vals!(samples, UInt8Array),
+        DataType::UInt16 => count_unique_vals!(samples, UInt16Array),
+        DataType::UInt32 => count_unique_vals!(samples, UInt32Array),
+        DataType::UInt64 => count_unique_vals!(samples, UInt64Array),
+        DataType::Date32 => count_unique_vals!(samples, Date32Array),
+        DataType::Date64 => count_unique_vals!(samples, Date64Array),
+        DataType::FixedSizeBinary(_) => count_unique_vals!(samples, FixedSizeBinaryArray),
+
+        // Safe assumption that cardinality in these types is near perfect if not perfect
+        DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _)
+        | DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Dictionary(_, _)
+        | DataType::FixedSizeList(_, _)
+        | DataType::Float16
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::RunEndEncoded(_, _)
+        | DataType::Struct(_)
+        | DataType::Union(_, _)
+        | DataType::Duration(_)
+        | DataType::Map(_, _)
+        | DataType::List(_)
+        | DataType::ListView(_)
+        | DataType::Timestamp(_, _)
+        | DataType::Interval(_)
+        | DataType::LargeListView(_)
+        | DataType::LargeList(_)
+        | DataType::Time32(_)
+        | DataType::Time64(_) => samples.len(),
+    };
+
+    let cc = unique_count as f32 / samples.len() as f32;
 
     Ok(cc)
 }

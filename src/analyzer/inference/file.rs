@@ -10,6 +10,7 @@ use calamine::{Data, Ods, Range, Reader, Table, Xls, Xlsb, Xlsx, XlsxError, open
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::{
     fs::{self, File},
+    io::Seek,
     path::PathBuf,
     sync::Arc,
 };
@@ -75,13 +76,19 @@ impl FileInferenceEngine {
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("csv") {
-                let file = File::open(&path).map_err(|e| NError::FileError(e.to_string()))?;
+                let mut file = File::open(&path).map_err(|e| NError::FileError(e.to_string()))?;
 
                 let (schema, _) = Format::default()
                     .with_header(self.csv_has_header)
-                    .infer_schema(&file, Some(self.sample_size))?;
+                    .infer_schema(&mut file, Some(self.sample_size))?;
 
-                let mut csv_reader = ReaderBuilder::new(Arc::new(schema.clone())).build(file)?;
+                file.rewind()?;
+
+                let mut csv_reader = ReaderBuilder::new(Arc::new(schema.clone()))
+                    .with_header(self.csv_has_header)
+                    .build(file)?;
+
+                let record_batch = csv_reader.next();
 
                 if let Some(v) = &path.file_name().and_then(|s| s.to_str()) {
                     let table_name = (*v).to_string();
@@ -112,8 +119,6 @@ impl FileInferenceEngine {
                     // There will be generation of only one table def
                     let mut table_def = convert_into_table_defs(result)?;
 
-                    let record_batch = csv_reader.next();
-
                     if let Some(batch) = record_batch {
                         let mut batch = batch?;
 
@@ -137,19 +142,39 @@ impl FileInferenceEngine {
                                         .fields
                                         .iter_mut()
                                         .find(|f| f.name == *field.name())
-                                        && ff.canonical_type != resolved_result.dest_type
                                     {
-                                        ff.canonical_type = resolved_result.dest_type;
-                                        ff.type_confidence = Some(resolved_result.confidence);
-                                        ff.is_nullable = resolved_result.nullable;
-                                        ff.char_max_length =
-                                            resolved_result.character_maximum_length;
-                                        ff.numeric_precision = resolved_result.numeric_precision;
-                                        ff.numeric_scale = resolved_result.numeric_scale;
-                                        ff.datetime_precision = resolved_result.datetime_precision;
+                                        // Update char_max_length
+                                        match (&ff.canonical_type, &resolved_result.dest_type) {
+                                            (DataType::Utf8, DataType::Utf8)
+                                            | (DataType::LargeUtf8, DataType::LargeUtf8)
+                                            | (DataType::Utf8View, DataType::Utf8View) => {
+                                                ff.char_max_length =
+                                                    resolved_result.character_maximum_length;
+                                            }
 
-                                        // Very important for field values in batch to be updated
-                                        cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
+                                            (_, _) => {}
+                                        }
+
+                                        // Update type related signals when there is a mismatch on types
+                                        if ff.canonical_type != resolved_result.dest_type {
+                                            ff.canonical_type = resolved_result.dest_type;
+                                            ff.type_confidence = Some(resolved_result.confidence);
+                                            ff.is_nullable = resolved_result.nullable;
+                                            ff.char_max_length =
+                                                resolved_result.character_maximum_length;
+                                            ff.numeric_precision =
+                                                resolved_result.numeric_precision;
+                                            ff.numeric_scale = resolved_result.numeric_scale;
+                                            ff.datetime_precision =
+                                                resolved_result.datetime_precision;
+
+                                            // Very important for field values in batch to be updated
+                                            cast_utf8_column(
+                                                &mut batch,
+                                                &ff.name,
+                                                &ff.canonical_type,
+                                            )?;
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -218,7 +243,7 @@ impl FileInferenceEngine {
                                 table_schema: table_schema.clone(),
                                 table_name: table_name.clone(),
                                 column_name: f.name().clone(),
-                                udt_name: format!("{}", f.data_type()),
+                                udt_name: f.data_type().to_string(),
                                 data_type: f.data_type().to_string(),
                                 column_default: None,
                                 character_maximum_length: None,
@@ -245,6 +270,7 @@ impl FileInferenceEngine {
                                 | DataType::Int32
                                 | DataType::Int64 => {
                                     let stats = ColumnStats::new(column);
+
                                     let resolver = TypeLatticeResolver::new();
                                     let resolved_result =
                                         resolver.promote(column.data_type(), &stats)?;
@@ -253,19 +279,37 @@ impl FileInferenceEngine {
                                         .fields
                                         .iter_mut()
                                         .find(|f| f.name == *field.name())
-                                        && ff.canonical_type != resolved_result.dest_type
                                     {
-                                        ff.canonical_type = resolved_result.dest_type;
-                                        ff.type_confidence = Some(resolved_result.confidence);
-                                        ff.is_nullable = resolved_result.nullable;
-                                        ff.char_max_length =
-                                            resolved_result.character_maximum_length;
-                                        ff.numeric_precision = resolved_result.numeric_precision;
-                                        ff.numeric_scale = resolved_result.numeric_scale;
-                                        ff.datetime_precision = resolved_result.datetime_precision;
+                                        // Update char_max_length
+                                        match (&ff.canonical_type, &resolved_result.dest_type) {
+                                            (DataType::Utf8, DataType::Utf8)
+                                            | (DataType::LargeUtf8, DataType::LargeUtf8)
+                                            | (DataType::Utf8View, DataType::Utf8View) => {
+                                                ff.char_max_length =
+                                                    resolved_result.character_maximum_length;
+                                            }
 
-                                        // Very important for field values in batch to be updated
-                                        cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
+                                            (_, _) => {}
+                                        }
+                                        if ff.canonical_type != resolved_result.dest_type {
+                                            ff.canonical_type = resolved_result.dest_type.clone();
+                                            ff.type_confidence = Some(resolved_result.confidence);
+                                            ff.is_nullable = resolved_result.nullable;
+                                            ff.char_max_length =
+                                                resolved_result.character_maximum_length;
+                                            ff.numeric_precision =
+                                                resolved_result.numeric_precision;
+                                            ff.numeric_scale = resolved_result.numeric_scale;
+                                            ff.datetime_precision =
+                                                resolved_result.datetime_precision;
+
+                                            // Very important for field values in batch to be updated
+                                            cast_utf8_column(
+                                                &mut batch,
+                                                &ff.name,
+                                                &resolved_result.dest_type,
+                                            )?;
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -361,19 +405,38 @@ impl FileInferenceEngine {
                                         .fields
                                         .iter_mut()
                                         .find(|f| f.name == *field.name())
-                                        && ff.canonical_type != resolved_result.dest_type
                                     {
-                                        ff.canonical_type = resolved_result.dest_type;
-                                        ff.type_confidence = Some(resolved_result.confidence);
-                                        ff.is_nullable = resolved_result.nullable;
-                                        ff.char_max_length =
-                                            resolved_result.character_maximum_length;
-                                        ff.numeric_precision = resolved_result.numeric_precision;
-                                        ff.numeric_scale = resolved_result.numeric_scale;
-                                        ff.datetime_precision = resolved_result.datetime_precision;
+                                        // Update char_max_length
+                                        match (&ff.canonical_type, &resolved_result.dest_type) {
+                                            (DataType::Utf8, DataType::Utf8)
+                                            | (DataType::LargeUtf8, DataType::LargeUtf8)
+                                            | (DataType::Utf8View, DataType::Utf8View) => {
+                                                ff.char_max_length =
+                                                    resolved_result.character_maximum_length;
+                                            }
 
-                                        // Very important for field values in batch to be updated
-                                        cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
+                                            (_, _) => {}
+                                        }
+
+                                        if ff.canonical_type != resolved_result.dest_type {
+                                            ff.canonical_type = resolved_result.dest_type;
+                                            ff.type_confidence = Some(resolved_result.confidence);
+                                            ff.is_nullable = resolved_result.nullable;
+                                            ff.char_max_length =
+                                                resolved_result.character_maximum_length;
+                                            ff.numeric_precision =
+                                                resolved_result.numeric_precision;
+                                            ff.numeric_scale = resolved_result.numeric_scale;
+                                            ff.datetime_precision =
+                                                resolved_result.datetime_precision;
+
+                                            // Very important for field values in batch to be updated
+                                            cast_utf8_column(
+                                                &mut batch,
+                                                &ff.name,
+                                                &ff.canonical_type,
+                                            )?;
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -694,8 +757,137 @@ fn calamine_type_to_arrow(values: &[&Data]) -> DataType {
     } else if values.iter().all(|val| matches!(**val, Data::Int(_))) {
         DataType::Int64
     } else if values.iter().all(|val| matches!(**val, Data::Float(_))) {
+        if values.iter().all(|val| match val {
+            Data::Float(v) => {
+                v.is_finite() && v.fract().abs() < f64::MIN_POSITIVE && v.abs() < i64::MAX as f64
+            }
+            _ => false,
+        }) {
+            return DataType::Int64;
+        }
         DataType::Float64
     } else {
         DataType::Utf8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_csv_inference() {
+        let config = StorageConfig::new_file_backend(StorageBackend::Csv, "./assets/csv").unwrap();
+
+        let csv_inference = FileInferenceEngine::default();
+
+        let result = csv_inference.infer_from_csv(&config).unwrap();
+
+        assert_eq!(result.len(), 1);
+
+        // Fetched at is read in as Integer but parquet seems to store the semantic type
+        let fetched_at = result
+            .iter()
+            .find(|t| t.name == "albums.csv")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "fetched_at")
+            .unwrap();
+
+        assert!(matches!(
+            fetched_at.canonical_type,
+            DataType::Timestamp(_, _)
+        ));
+
+        // release_date is read in as Integer but parquet seems to store the semantic type
+        let release_date = result
+            .iter()
+            .find(|t| t.name == "albums.csv")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "release_date")
+            .unwrap();
+
+        assert!(matches!(release_date.canonical_type, DataType::Date32));
+    }
+
+    #[test]
+    fn test_xlsx_inference() {
+        let config =
+            StorageConfig::new_file_backend(StorageBackend::Excel, "./assets/xlsx").unwrap();
+
+        let excel_inference = FileInferenceEngine::default();
+
+        let result = excel_inference.infer_from_excel(&config).unwrap();
+
+        assert_eq!(result.len(), 1);
+
+        // Fetched at is read in as Utf8 but resolver promotes it to Timestamp
+        let fetched_at = result
+            .iter()
+            .find(|t| t.name == "albums")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "fetched_at")
+            .unwrap();
+
+        assert!(matches!(
+            fetched_at.canonical_type,
+            DataType::Timestamp(_, _)
+        ));
+
+        // release_date is read in as Utf8 but resolver promotes it to Date32
+        let release_date = result
+            .iter()
+            .find(|t| t.name == "albums")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "release_date")
+            .unwrap();
+
+        assert!(matches!(release_date.canonical_type, DataType::Date32));
+    }
+
+    #[test]
+    fn test_parquet_inference() {
+        let config =
+            StorageConfig::new_file_backend(StorageBackend::Excel, "./assets/parquet").unwrap();
+
+        let parquet_inference = FileInferenceEngine::default();
+
+        let result = parquet_inference.infer_from_parquet(&config).unwrap();
+
+        assert_eq!(result.len(), 1);
+
+        // Fetched at is read in as Integer but parquet seems to store the semantic type
+        let fetched_at = result
+            .iter()
+            .find(|t| t.name == "albums.parquet")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "fetched_at")
+            .unwrap();
+
+        assert!(matches!(
+            fetched_at.canonical_type,
+            DataType::Timestamp(_, _)
+        ));
+
+        // release_date is read in as Integer but parquet seems to store the semantic type
+        let release_date = result
+            .iter()
+            .find(|t| t.name == "albums.parquet")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "release_date")
+            .unwrap();
+
+        assert!(matches!(release_date.canonical_type, DataType::Date32));
     }
 }
