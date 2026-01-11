@@ -143,6 +143,8 @@ impl FileInferenceEngine {
                                         .iter_mut()
                                         .find(|f| f.name == *field.name())
                                     {
+                                        ff.type_confidence = Some(resolved_result.confidence);
+
                                         // Update char_max_length
                                         match (&ff.canonical_type, &resolved_result.dest_type) {
                                             (DataType::Utf8, DataType::Utf8)
@@ -280,6 +282,7 @@ impl FileInferenceEngine {
                                         .iter_mut()
                                         .find(|f| f.name == *field.name())
                                     {
+                                        ff.type_confidence = Some(resolved_result.confidence);
                                         // Update char_max_length
                                         match (&ff.canonical_type, &resolved_result.dest_type) {
                                             (DataType::Utf8, DataType::Utf8)
@@ -406,6 +409,8 @@ impl FileInferenceEngine {
                                         .iter_mut()
                                         .find(|f| f.name == *field.name())
                                     {
+                                        ff.type_confidence = Some(resolved_result.confidence);
+
                                         // Update char_max_length
                                         match (&ff.canonical_type, &resolved_result.dest_type) {
                                             (DataType::Utf8, DataType::Utf8)
