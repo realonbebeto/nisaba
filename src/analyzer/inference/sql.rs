@@ -1,12 +1,20 @@
+use std::sync::Arc;
+
 use arrow::{
     array::{
-        ArrayBuilder, ArrayRef, ArrowPrimitiveType, BinaryBuilder, BooleanBuilder, Date32Builder,
-        Date64Builder, Decimal128Builder, FixedSizeBinaryBuilder, FixedSizeListBuilder,
-        Float16Builder, Float32Builder, Float64Builder, Int8Builder, Int16Builder, Int32Builder,
-        Int64Builder, PrimitiveBuilder, RecordBatch, StringBuilder, Time32MillisecondBuilder,
-        Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+        Array, ArrayBuilder, ArrayRef, ArrowPrimitiveType, BinaryBuilder, BooleanBuilder,
+        Date32Builder, Date64Builder, Decimal128Builder, FixedSizeBinaryBuilder,
+        FixedSizeListBuilder, Float16Builder, Float32Builder, Float64Array, Float64Builder,
+        Int8Builder, Int16Builder, Int32Builder, Int64Builder, PrimitiveBuilder, RecordBatch,
+        StringBuilder, Time32MillisecondBuilder, Time64MicrosecondBuilder,
+        TimestampMicrosecondBuilder, TimestampMillisecondBuilder, TimestampNanosecondBuilder,
+        TimestampSecondBuilder,
     },
-    datatypes::{DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, TimeUnit},
+    datatypes::{
+        DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Time64MicrosecondType,
+        Time64NanosecondType, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+        TimestampNanosecondType, TimestampSecondType,
+    },
     error::ArrowError,
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
@@ -33,12 +41,12 @@ use crate::{
 /// SQL inference engine for common OLTPs
 #[derive(Debug)]
 pub struct SQLInferenceEngine {
-    profile_data: bool,
+    sample_size: usize,
 }
 
 impl Default for SQLInferenceEngine {
     fn default() -> Self {
-        Self { profile_data: true }
+        Self { sample_size: 1000 }
     }
 }
 
@@ -47,8 +55,8 @@ impl SQLInferenceEngine {
         SQLInferenceEngine::default()
     }
 
-    pub fn with_profiling(mut self, profile: bool) -> Self {
-        self.profile_data = profile;
+    pub fn with_sample_size(mut self, size: usize) -> Self {
+        self.sample_size = size;
         self
     }
 
@@ -69,7 +77,7 @@ impl SQLInferenceEngine {
         // 5. char_class_signature
 
         for table_def in &mut table_defs {
-            let data = read_mysql_table(&pool, table_def).await?;
+            let data = read_mysql_table(&pool, table_def, self.sample_size).await?;
 
             if let Some(batch) = data {
                 let metrics = compute_field_metrics(&batch)?;
@@ -102,7 +110,7 @@ impl SQLInferenceEngine {
         // 5. char_class_signature
 
         for table_def in &mut table_defs {
-            let data = read_postgres_table(&pool, table_def).await?;
+            let data = read_postgres_table(&pool, table_def, self.sample_size).await?;
 
             if let Some(batch) = data {
                 let metrics = compute_field_metrics(&batch)?;
@@ -140,21 +148,75 @@ impl SQLInferenceEngine {
         // 9. datetime_precision
 
         for table_def in &mut table_defs {
-            let data = read_sqlite_table(&pool, table_def).await?;
+            let data = read_sqlite_table(&pool, table_def, self.sample_size).await?;
 
             if let Some(mut batch) = data {
                 // Promotion
                 let schema = batch.schema();
 
                 for (index, field) in schema.fields().iter().enumerate() {
-                    let column = batch.column(index);
+                    let mut column = batch.column(index).clone();
+                    // Handling Boolean/Int64 from f64
+                    if column.data_type() == &DataType::Float64 {
+                        let arr = column.as_any().downcast_ref::<Float64Array>().ok_or(
+                            ArrowError::CastError("Failed to cast to Float64Array".into()),
+                        )?;
+
+                        if arr
+                            .iter()
+                            .flatten()
+                            .collect::<Vec<f64>>()
+                            .iter()
+                            .all(|val| val.is_finite() && (*val == 0.0 || *val == 1.0))
+                        {
+                            let mut builder = BooleanBuilder::new();
+                            for index in 0..arr.len() {
+                                if arr.is_null(index) {
+                                    builder.append_null();
+                                } else {
+                                    builder.append_value(arr.value(index) != 0.0);
+                                }
+                            }
+                            column = Arc::new(builder.finish());
+                        } else if arr
+                            .iter()
+                            .flatten()
+                            .collect::<Vec<f64>>()
+                            .iter()
+                            .all(|val| {
+                                val.is_finite()
+                                    && val.fract().abs() < f64::MIN_POSITIVE
+                                    && val.abs() < i64::MAX as f64
+                            })
+                        {
+                            let mut builder = Int64Builder::new();
+
+                            for index in 0..arr.len() {
+                                if arr.is_null(index) {
+                                    builder.append_null();
+                                } else {
+                                    builder.append_value(arr.value(index) as i64);
+                                }
+                            }
+
+                            column = Arc::new(builder.finish());
+                        }
+
+                        if let Some(ff) = table_def
+                            .fields
+                            .iter_mut()
+                            .find(|f| f.name == *field.name())
+                        {
+                            ff.canonical_type = column.data_type().clone();
+                        }
+                    }
 
                     match column.data_type() {
                         DataType::LargeUtf8
                         | DataType::Utf8
                         | DataType::Int32
                         | DataType::Int64 => {
-                            let stats = ColumnStats::new(column);
+                            let stats = ColumnStats::new(&column);
                             let resolver = TypeLatticeResolver::new();
                             let resolved_result = resolver.promote(column.data_type(), &stats)?;
 
@@ -162,18 +224,32 @@ impl SQLInferenceEngine {
                                 .fields
                                 .iter_mut()
                                 .find(|f| f.name == *field.name())
-                                && ff.canonical_type != resolved_result.dest_type
                             {
-                                ff.canonical_type = resolved_result.dest_type;
                                 ff.type_confidence = Some(resolved_result.confidence);
-                                ff.is_nullable = resolved_result.nullable;
-                                ff.char_max_length = resolved_result.character_maximum_length;
-                                ff.numeric_precision = resolved_result.numeric_precision;
-                                ff.numeric_scale = resolved_result.numeric_scale;
-                                ff.datetime_precision = resolved_result.datetime_precision;
 
-                                // Very important for field values in batch to be updated
-                                cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
+                                // Update char_max_length
+                                match (&ff.canonical_type, &resolved_result.dest_type) {
+                                    (DataType::Utf8, DataType::Utf8)
+                                    | (DataType::LargeUtf8, DataType::LargeUtf8)
+                                    | (DataType::Utf8View, DataType::Utf8View) => {
+                                        ff.char_max_length =
+                                            resolved_result.character_maximum_length;
+                                    }
+
+                                    (_, _) => {}
+                                }
+                                if ff.canonical_type != resolved_result.dest_type {
+                                    ff.canonical_type = resolved_result.dest_type;
+                                    ff.type_confidence = Some(resolved_result.confidence);
+                                    ff.is_nullable = resolved_result.nullable;
+                                    ff.char_max_length = resolved_result.character_maximum_length;
+                                    ff.numeric_precision = resolved_result.numeric_precision;
+                                    ff.numeric_scale = resolved_result.numeric_scale;
+                                    ff.datetime_precision = resolved_result.datetime_precision;
+
+                                    // Very important for field values in batch to be updated
+                                    cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
+                                }
                             }
                         }
                         _ => {}
@@ -231,10 +307,11 @@ impl SchemaInferenceEngine for SQLInferenceEngine {
 async fn read_postgres_table(
     pool: &PgPool,
     table_def: &TableDef,
+    sample_size: usize,
 ) -> Result<Option<RecordBatch>, NError> {
-    let query = "SELECT * FROM $1 LIMIT 1000";
-    let rows = sqlx::query(query)
-        .bind(&table_def.name)
+    let query = format!("SELECT * FROM {} LIMIT $1", table_def.name);
+    let rows = sqlx::query(&query)
+        .bind(sample_size as i32)
         .fetch_all(pool)
         .await?;
 
@@ -257,7 +334,7 @@ async fn read_postgres_fields(
                                 numeric_scale, 
                                 datetime_precision,
                                 character_maximum_length,
-                                udt_name, 
+                                udt_name 
                         FROM information_schema.columns 
                         WHERE table_schema = $1";
 
@@ -306,7 +383,7 @@ fn build_record_batches<R>(
 ) -> Result<Option<RecordBatch>, NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    for<'a> &'a str: sqlx::ColumnIndex<R>,
     bool: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     i8: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     i16: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
@@ -324,7 +401,6 @@ where
     if rows.is_empty() {
         return Ok(None);
     }
-
     let schema = table_def_to_arrow_schema(table_def);
 
     // Build array builders for each column
@@ -348,7 +424,7 @@ where
 
     for row in &rows {
         for (index, field) in schema.fields().iter().enumerate() {
-            append_value(&mut builders[index], row, index, field)?;
+            append_value(&mut builders[index], row, field.name().as_str(), field)?;
         }
     }
 
@@ -365,10 +441,11 @@ where
 async fn read_mysql_table(
     pool: &MySqlPool,
     table_def: &TableDef,
+    sample_size: usize,
 ) -> Result<Option<RecordBatch>, NError> {
-    let query = "SELECT * FROM $1 LIMIT 1000";
-    let rows = sqlx::query(query)
-        .bind(&table_def.name)
+    let query = format!("SELECT * FROM {} LIMIT ?", table_def.name);
+    let rows = sqlx::query(&query)
+        .bind(sample_size as i32)
         .fetch_all(pool)
         .await?;
 
@@ -382,19 +459,19 @@ async fn read_mysql_fields(
     let silo_id = format!("{}-{}", config.backend, config.host.clone().unwrap());
 
     let query = "SELECT 
-                            table_schema, 
-                            table_name, 
-                            column_name, 
-                            column_default,
-                            is_nullable,
-                            data_type,
-                            numeric_precision, 
-                            numeric_scale, 
-                            datetime_precision,
-                            character_maximum_length,
-                            column_type AS udt_name, 
+                            table_schema AS table_schema, 
+                            table_name AS table_name, 
+                            column_name AS column_name, 
+                            column_default AS column_default,
+                            is_nullable AS is_nullable,
+                            data_type AS data_type,
+                            numeric_precision AS numeric_precision, 
+                            numeric_scale AS numeric_scale, 
+                            datetime_precision AS datetime_precision,
+                            character_maximum_length AS character_maximum_length,
+                            column_type AS udt_name 
                         FROM information_schema.COLUMNS
-                        WHERE TABLE_SCHEMA = DATABASE();";
+                        WHERE table_schema = DATABASE();";
 
     let rows = sqlx::query(query).fetch_all(pool).await?;
 
@@ -406,12 +483,14 @@ async fn read_mysql_fields(
         let column_name: String = row.get("column_name");
         let column_default: Option<String> = row.get("column_default");
         let is_nullable: String = row.get("is_nullable");
-        let data_type: String = row.get("data_type");
-        let numeric_precision: Option<i32> = row.get("numeric_precision");
-        let numeric_scale: Option<i32> = row.get("numeric_scale");
-        let datetime_precision: Option<i32> = row.get("datetime_precision");
-        let character_maximum_length: Option<i32> = row.get("character_maximum_length");
-        let udt_name: String = row.get("udt_name");
+        let data_type: Vec<u8> = row.get("data_type");
+        let data_type = String::from_utf8(data_type)?;
+        let numeric_precision: Option<u32> = row.get("numeric_precision");
+        let numeric_scale: Option<u32> = row.get("numeric_scale");
+        let datetime_precision: Option<u32> = row.get("datetime_precision");
+        let character_maximum_length: Option<i64> = row.get("character_maximum_length");
+        let udt_name: Vec<u8> = row.get("udt_name");
+        let udt_name = String::from_utf8(udt_name)?;
 
         source_fields.push(SourceField {
             silo_id: silo_id.clone(),
@@ -421,10 +500,10 @@ async fn read_mysql_fields(
             column_default,
             is_nullable,
             data_type,
-            numeric_precision,
-            numeric_scale,
-            datetime_precision,
-            character_maximum_length,
+            numeric_precision: numeric_precision.map(|v| v as i32),
+            numeric_scale: numeric_scale.map(|v| v as i32),
+            datetime_precision: datetime_precision.map(|v| v as i32),
+            character_maximum_length: character_maximum_length.map(|v| v as i32),
             udt_name,
         });
     }
@@ -438,10 +517,11 @@ async fn read_mysql_fields(
 async fn read_sqlite_table(
     pool: &SqlitePool,
     table_def: &TableDef,
+    sample_size: usize,
 ) -> Result<Option<RecordBatch>, NError> {
-    let query = "SELECT * FROM $1 LIMIT 1000";
-    let rows = sqlx::query(query)
-        .bind(&table_def.name)
+    let query = format!("SELECT * FROM {} LIMIT $1", table_def.name);
+    let rows = sqlx::query(&query)
+        .bind(sample_size as i32)
         .fetch_all(pool)
         .await?;
 
@@ -456,30 +536,34 @@ async fn read_sqlite_fields(
 
     let mut source_fields = Vec::new();
 
-    let query = "SELECT table_name FROM sqlite_master WHERE type = 'table';";
+    let query = "SELECT tbl_name FROM sqlite_master WHERE type = 'table';";
 
     let table_names = sqlx::query(query).fetch_all(pool).await?;
 
     let table_names = table_names
         .into_iter()
-        .map(|r| r.get("table_name"))
+        .map(|r| r.get("tbl_name"))
         .collect::<Vec<String>>();
 
     for table_name in table_names {
-        let query = "PRAGMA table_info($1)";
+        let query = format!("PRAGMA table_info({})", table_name);
 
-        let rows = sqlx::query(query).bind(&table_name).fetch_all(pool).await?;
+        let rows = sqlx::query(&query).fetch_all(pool).await?;
 
-        let schemas: Vec<SourceField> = rows
+        let schemas: Result<Vec<SourceField>, std::string::FromUtf8Error> = rows
             .into_iter()
             .map(|r| {
                 let table_schema = String::from("default");
+
                 let column_name: String = r.get("name");
+
                 let column_default: Option<String> = r.get("dflt_value");
+
                 let is_nullable: bool = r.get("notnull");
+
                 let data_type: String = r.get("type");
 
-                SourceField {
+                Ok(SourceField {
                     silo_id: silo_id.clone(),
                     table_schema,
                     table_name: table_name.clone(),
@@ -496,11 +580,11 @@ async fn read_sqlite_fields(
                     datetime_precision: None,
                     character_maximum_length: None,
                     udt_name: data_type.to_lowercase(),
-                }
+                })
             })
             .collect();
 
-        source_fields.extend(schemas);
+        source_fields.extend(schemas?);
     }
 
     Ok(source_fields)
@@ -547,7 +631,18 @@ fn create_array_builder(
 
         DataType::Time32(_) => Box::new(Time32MillisecondBuilder::with_capacity(capacity)),
         DataType::Time64(_) => Box::new(Time64MicrosecondBuilder::with_capacity(capacity)),
-        DataType::Timestamp(_, _) => Box::new(TimestampMicrosecondBuilder::with_capacity(capacity)),
+        DataType::Timestamp(TimeUnit::Second, _) => {
+            Box::new(TimestampSecondBuilder::with_capacity(capacity))
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            Box::new(TimestampMillisecondBuilder::with_capacity(capacity))
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            Box::new(TimestampMicrosecondBuilder::with_capacity(capacity))
+        }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            Box::new(TimestampNanosecondBuilder::with_capacity(capacity))
+        }
 
         DataType::Utf8 => {
             let data_capacity = byte_size
@@ -570,15 +665,15 @@ fn create_array_builder(
 // =======================
 // Value Appender
 // =======================
-fn append_value<R>(
+fn append_value<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
     field: &Field,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     bool: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     i8: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     i16: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
@@ -604,21 +699,38 @@ where
         DataType::Int64 => append_int::<_, Int64Type>(builder, row, index),
         DataType::Float32 => append_float32(builder, row, index),
         DataType::Float64 => append_float64(builder, row, index),
-        DataType::Time64(TimeUnit::Microsecond) => append_time(builder, row, index),
-        DataType::Timestamp(TimeUnit::Microsecond, _) => append_timestamp(builder, row, index),
+        DataType::Time64(TimeUnit::Microsecond) => {
+            append_time::<_, Time64MicrosecondType>(builder, row, index)
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            append_time::<_, Time64NanosecondType>(builder, row, index)
+        }
+
+        DataType::Timestamp(TimeUnit::Second, _) => {
+            append_timestamp::<_, TimestampSecondType>(builder, row, index)
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            append_timestamp::<_, TimestampMillisecondType>(builder, row, index)
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            append_timestamp::<_, TimestampMicrosecondType>(builder, row, index)
+        }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            append_timestamp::<_, TimestampNanosecondType>(builder, row, index)
+        }
 
         _ => append_string(builder, row, index),
     }
 }
 
-fn append_binary<R>(
+fn append_binary<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     Vec<u8>: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
     let b = builder
@@ -636,10 +748,14 @@ where
     Ok(())
 }
 
-fn append_bool<R>(builder: &mut Box<dyn ArrayBuilder>, row: &R, index: usize) -> Result<(), NError>
+fn append_bool<'r, R>(
+    builder: &mut Box<dyn ArrayBuilder>,
+    row: &R,
+    index: &'r str,
+) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     bool: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     i64: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
@@ -660,10 +776,14 @@ where
     Ok(())
 }
 
-fn append_date<R>(builder: &mut Box<dyn ArrayBuilder>, row: &R, index: usize) -> Result<(), NError>
+fn append_date<'r, R>(
+    builder: &mut Box<dyn ArrayBuilder>,
+    row: &R,
+    index: &'r str,
+) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     NaiveDate: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     String: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
@@ -719,15 +839,15 @@ where
     Ok(())
 }
 
-fn append_decimal<R>(
+fn append_decimal<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
     scale: i8,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     f64: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     String: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
@@ -754,14 +874,14 @@ where
     Ok(())
 }
 
-fn append_float32<R>(
+fn append_float32<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     f32: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     f64: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
@@ -782,16 +902,18 @@ where
     Ok(())
 }
 
-fn append_float64<R>(
+fn append_float64<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     f32: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     f64: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+    i64: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+    String: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
     let b = builder
         .as_any_mut()
@@ -810,14 +932,14 @@ where
     Ok(())
 }
 
-fn append_int<R, T>(
+fn append_int<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     T: ArrowPrimitiveType,
     i64: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     T::Native: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database> + TryFrom<i64>,
@@ -844,14 +966,14 @@ where
     Ok(())
 }
 
-fn append_string<R>(
+fn append_string<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     String: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
     let b = builder
@@ -869,17 +991,22 @@ where
     Ok(())
 }
 
-fn append_time<R>(builder: &mut Box<dyn ArrayBuilder>, row: &R, index: usize) -> Result<(), NError>
+fn append_time<'r, R, T>(
+    builder: &mut Box<dyn ArrayBuilder>,
+    row: &R,
+    index: &'r str,
+) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    T: ArrowPrimitiveType<Native = i64>,
+    &'r str: sqlx::ColumnIndex<R>,
     NaiveTime: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
     let b = builder
         .as_any_mut()
-        .downcast_mut::<Time64MicrosecondBuilder>()
+        .downcast_mut::<PrimitiveBuilder<T>>()
         .ok_or(ArrowError::CastError(
-            "Failed to cast to Time64MicrosecondBuilder".into(),
+            "Failed to cast to PrimitiveBuilder".into(),
         ))?;
 
     if let Ok(time) = row.try_get::<NaiveTime, _>(index) {
@@ -894,23 +1021,24 @@ where
     Ok(())
 }
 
-fn append_timestamp<R>(
+fn append_timestamp<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    T: ArrowPrimitiveType<Native = i64>,
+    &'r str: sqlx::ColumnIndex<R>,
     NaiveDateTime: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     String: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     i64: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
     let b = builder
         .as_any_mut()
-        .downcast_mut::<TimestampMicrosecondBuilder>()
+        .downcast_mut::<PrimitiveBuilder<T>>()
         .ok_or(ArrowError::CastError(
-            "Failed to cast to TimestampMicrosecondBuilder".into(),
+            "Failed to cast to PrimitiveBuilder".into(),
         ))?;
 
     if let Ok(val) = row.try_get::<NaiveDateTime, _>(index) {
@@ -959,14 +1087,14 @@ where
     Ok(())
 }
 
-fn append_fixed_size_binary<R>(
+fn append_fixed_size_binary<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
-    index: usize,
+    index: &'r str,
 ) -> Result<(), NError>
 where
     R: Row,
-    usize: sqlx::ColumnIndex<R>,
+    &'r str: sqlx::ColumnIndex<R>,
     String: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
     Vec<u8>: for<'a> sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
 {
@@ -985,4 +1113,64 @@ where
         b.append_null();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mysql_inference() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::MySQL,
+            "localhost",
+            3306,
+            "mysql_store",
+            "mysql",
+            "mysql",
+            None::<String>,
+        )
+        .unwrap();
+
+        let sql_inference = SQLInferenceEngine::default();
+
+        let result = block_on(sql_inference.infer_from_mysql(&config)).unwrap();
+
+        assert_eq!(result.len(), 9);
+    }
+
+    #[test]
+    fn test_postgresql_inference() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::PostgreSQL,
+            "localhost",
+            5432,
+            "postgres",
+            "postgres",
+            "postgres",
+            Some("public"),
+        )
+        .unwrap();
+
+        let sql_inference = SQLInferenceEngine::default();
+
+        let result = block_on(sql_inference.infer_from_postgres(&config)).unwrap();
+
+        assert_eq!(result.len(), 9);
+    }
+
+    #[test]
+    fn test_sqlite_inference() {
+        let config = StorageConfig::new_file_backend(
+            StorageBackend::SQLite,
+            "./assets/sqlite/nisaba.sqlite",
+        )
+        .unwrap();
+
+        let sql_inference = SQLInferenceEngine::default();
+
+        let result = block_on(sql_inference.infer_from_sqlite(&config)).unwrap();
+
+        assert_eq!(result.len(), 2);
+    }
 }

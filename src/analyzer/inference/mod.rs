@@ -265,11 +265,11 @@ fn sql_to_arrow_type(
         }
 
         "float2" | "float16" => Ok(DataType::Float16),
-        "real" | "float4" | "float32" => Ok(DataType::Float32),
-        "double" | "float" | "float8" | "float64" => Ok(DataType::Float64),
+        "float4" | "float32" => Ok(DataType::Float32),
+        "real" | "double" | "float" | "float8" | "float64" => Ok(DataType::Float64),
         "date" | "date32" => Ok(DataType::Date32),
         "date64" => Ok(DataType::Date64),
-        "bytea" | "binary" => Ok(DataType::Binary),
+        "bytea" | "binary" | "blob" => Ok(DataType::Binary),
         "uuid" => Ok(DataType::FixedSizeBinary(16)),
         "jsonb" | "largebinary" => Ok(DataType::LargeBinary),
         "json" | "text" => Ok(DataType::Utf8),
