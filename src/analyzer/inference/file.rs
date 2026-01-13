@@ -24,7 +24,7 @@ use crate::{
             promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
         },
     },
-    error::NError,
+    error::NisabaError,
     types::TableDef,
 };
 
@@ -63,20 +63,20 @@ impl FileInferenceEngine {
         self
     }
 
-    fn infer_from_csv(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    fn infer_from_csv(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         let dir_str = config.connection_string()?;
         let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
 
-        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidDetail(e.to_string()))?;
+        let entries = fs::read_dir(dir_str)?;
 
         let mut table_defs: Vec<TableDef> = Vec::new();
 
         for entry in entries {
-            let entry = entry.map_err(|e| NError::InvalidDetail(e.to_string()))?;
+            let entry = entry?;
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("csv") {
-                let mut file = File::open(&path).map_err(|e| NError::FileError(e.to_string()))?;
+                let mut file = File::open(&path)?;
 
                 let (schema, _) = Format::default()
                     .with_header(self.csv_has_header)
@@ -205,18 +205,18 @@ impl FileInferenceEngine {
         Ok(table_defs)
     }
 
-    fn infer_from_excel(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
-        let dir_str = &config.dir_path.clone().ok_or(NError::InvalidDetail(
+    fn infer_from_excel(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
+        let dir_str = &config.dir_path.clone().ok_or(NisabaError::Missing(
             "Directory with Excel workbooks not provided".into(),
         ))?;
         // Get all excel filenames
-        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidDetail(e.to_string()))?;
+        let entries = fs::read_dir(dir_str)?;
         let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
 
         let mut table_defs: Vec<TableDef> = Vec::new();
 
         for entry in entries {
-            let entry = entry.map_err(|e| NError::InvalidDetail(e.to_string()))?;
+            let entry = entry?;
             let path = entry.path();
 
             if path
@@ -341,21 +341,21 @@ impl FileInferenceEngine {
         Ok(table_defs)
     }
 
-    fn infer_from_parquet(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    fn infer_from_parquet(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         let dir_str = config.connection_string()?;
 
         // Get all parquet filenames
-        let entries = fs::read_dir(dir_str).map_err(|e| NError::InvalidDetail(e.to_string()))?;
+        let entries = fs::read_dir(dir_str)?;
         let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
 
         let mut table_defs: Vec<TableDef> = Vec::new();
 
         for entry in entries {
-            let entry = entry.map_err(|e| NError::InvalidDetail(e.to_string()))?;
+            let entry = entry?;
             let path = entry.path();
 
             if path.extension().and_then(|s| s.to_str()) == Some("parquet") {
-                let file = File::open(&path).map_err(|e| NError::FileError(e.to_string()))?;
+                let file = File::open(&path)?;
                 let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
                 let schema = builder.schema();
 
@@ -472,12 +472,12 @@ impl FileInferenceEngine {
 }
 
 impl SchemaInferenceEngine for FileInferenceEngine {
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         match config.backend {
             StorageBackend::Csv => self.infer_from_csv(config),
             StorageBackend::Excel => self.infer_from_excel(config),
             StorageBackend::Parquet => self.infer_from_parquet(config),
-            _ => Err(NError::Unsupported(format!(
+            _ => Err(NisabaError::Unsupported(format!(
                 "{:?} file store unsupported by File engine",
                 config.backend
             )))?,
@@ -506,16 +506,16 @@ enum Workbook {
 }
 
 impl Workbook {
-    fn open(path: &PathBuf) -> Result<Self, NError> {
+    fn open(path: &PathBuf) -> Result<Self, NisabaError> {
         match path.extension().and_then(|s| s.to_str()) {
             Some("ods") => Ok(Workbook::Ods(open_workbook(path)?)),
             Some("xls") => Ok(Workbook::Xls(open_workbook(path)?)),
             Some("xlsb") => Ok(Workbook::Xlsb(open_workbook(path)?)),
             Some("xlsm") | Some("xlsx") => Ok(Workbook::Xlsx(open_workbook(path)?)),
-            _ => Err(NError::Unsupported(path.to_string_lossy().into())),
+            _ => Err(NisabaError::Unsupported(path.to_string_lossy().into())),
         }
     }
-    fn load_tables(&mut self) -> Result<(), NError> {
+    fn load_tables(&mut self) -> Result<(), NisabaError> {
         match self {
             Workbook::Ods(_) => Ok(()),
             Workbook::Xls(_) => Ok(()),
@@ -541,22 +541,22 @@ impl Workbook {
         }
     }
 
-    fn table_by_name(&mut self, table_name: &str) -> Result<Table<Data>, NError> {
+    fn table_by_name(&mut self, table_name: &str) -> Result<Table<Data>, NisabaError> {
         match self {
-            Workbook::Ods(_) => Err(NError::XlsxError(XlsxError::TableNotFound(
+            Workbook::Ods(_) => Err(NisabaError::Xlsx(XlsxError::TableNotFound(
                 table_name.into(),
             ))),
-            Workbook::Xls(_) => Err(NError::XlsxError(XlsxError::TableNotFound(
+            Workbook::Xls(_) => Err(NisabaError::Xlsx(XlsxError::TableNotFound(
                 table_name.into(),
             ))),
-            Workbook::Xlsb(_) => Err(NError::XlsxError(XlsxError::TableNotFound(
+            Workbook::Xlsb(_) => Err(NisabaError::Xlsx(XlsxError::TableNotFound(
                 table_name.into(),
             ))),
             Workbook::Xlsx(wb) => Ok(wb.table_by_name(table_name)?),
         }
     }
 
-    fn worksheet_range(&mut self, name: &str) -> Result<Range<Data>, NError> {
+    fn worksheet_range(&mut self, name: &str) -> Result<Range<Data>, NisabaError> {
         match self {
             Workbook::Ods(wb) => Ok(wb.worksheet_range(name)?),
             Workbook::Xls(wb) => Ok(wb.worksheet_range(name)?),
@@ -566,7 +566,7 @@ impl Workbook {
     }
 }
 
-fn read_excel_to_record_batch(path: &PathBuf) -> Result<Vec<(RecordBatch, String)>, NError> {
+fn read_excel_to_record_batch(path: &PathBuf) -> Result<Vec<(RecordBatch, String)>, NisabaError> {
     // Open workbook
     let mut workbook = Workbook::open(path)?;
     let sheet_names = workbook.sheet_names();
@@ -616,7 +616,7 @@ fn read_range_to_arrow(
     range: &Range<Data>,
     headers: &[String],
     skip: usize,
-) -> Result<Option<RecordBatch>, NError> {
+) -> Result<Option<RecordBatch>, NisabaError> {
     let (height, width) = range.get_size();
 
     if height > skip {

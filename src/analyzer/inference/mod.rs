@@ -29,7 +29,7 @@ pub use sql::SQLInferenceEngine;
 
 use crate::{
     analyzer::catalog::{StorageBackend, StorageConfig},
-    error::NError,
+    error::NisabaError,
     types::{FieldDef, TableDef},
 };
 
@@ -122,11 +122,11 @@ impl InferenceEngineRegistry {
     ///
     /// Returns:
     ///
-    /// A Result containing a vector of TableSchema objects or an NError if there is an issue with the
+    /// A Result containing a vector of TableSchema objects or an NisabaError if there is an issue with the
     /// operation.
-    pub fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    pub fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         let engine = self.get_engine(&config.backend).ok_or_else(|| {
-            NError::Unsupported(format!(
+            NisabaError::Unsupported(format!(
                 "No engine available for store type: {:?}",
                 config.backend
             ))
@@ -137,7 +137,10 @@ impl InferenceEngineRegistry {
         Ok(table_defs)
     }
 
-    pub fn discover_ecosystem(&self, configs: Vec<StorageConfig>) -> Result<Vec<TableDef>, NError> {
+    pub fn discover_ecosystem(
+        &self,
+        configs: Vec<StorageConfig>,
+    ) -> Result<Vec<TableDef>, NisabaError> {
         let mut table_defs = Vec::new();
 
         for config in configs {
@@ -151,7 +154,7 @@ impl InferenceEngineRegistry {
 /// Trait for schema inference engines
 pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
     /// Infer schema from a data source
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError>;
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError>;
 
     /// Check if this engine can handle the given data source
     fn can_handle(&self, backend: &StorageBackend) -> bool;
@@ -177,12 +180,12 @@ pub struct SourceField {
     pub udt_name: String,
 }
 
-pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef>, NError> {
+pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef>, NisabaError> {
     if schemas.is_empty() {
         return Ok(Vec::new());
     }
 
-    let fields: Result<Vec<FieldDef>, NError> = schemas
+    let fields: Result<Vec<FieldDef>, NisabaError> = schemas
         .into_iter()
         .map(|v| {
             let is_nullable = v.is_nullable.trim().eq_ignore_ascii_case("yes");
@@ -239,7 +242,7 @@ fn sql_to_arrow_type(
     numeric_precision: Option<i32>,
     numeric_scale: Option<i32>,
     datetime_precision: Option<i32>,
-) -> Result<DataType, NError> {
+) -> Result<DataType, NisabaError> {
     let normalized = data_type.to_lowercase();
     let normalized = &normalized.trim();
     match *normalized {
@@ -347,7 +350,9 @@ pub struct FieldMetrics {
     pub cardinality: f32,
 }
 
-pub fn compute_field_metrics(batch: &RecordBatch) -> Result<HashMap<String, FieldMetrics>, NError> {
+pub fn compute_field_metrics(
+    batch: &RecordBatch,
+) -> Result<HashMap<String, FieldMetrics>, NisabaError> {
     let mut metrics = HashMap::new();
 
     let schema = batch.schema();
@@ -516,7 +521,7 @@ fn detect_monotonicity(samples: &dyn Array) -> bool {
     }
 }
 
-fn compute_cardinality(samples: &dyn Array) -> Result<f32, NError> {
+fn compute_cardinality(samples: &dyn Array) -> Result<f32, NisabaError> {
     if samples.is_empty() {
         return Ok(0.0);
     }
@@ -608,7 +613,7 @@ fn compute_cardinality(samples: &dyn Array) -> Result<f32, NError> {
     Ok(cc)
 }
 
-fn compute_avg_byte_length(samples: &dyn Array) -> Result<Option<f32>, NError> {
+fn compute_avg_byte_length(samples: &dyn Array) -> Result<Option<f32>, NisabaError> {
     match samples.data_type() {
         DataType::Utf8 => {
             let string_arr =

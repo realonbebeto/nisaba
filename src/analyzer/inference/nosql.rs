@@ -23,7 +23,7 @@ use crate::{
             promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
         },
     },
-    error::NError,
+    error::NisabaError,
     types::TableDef,
 };
 
@@ -53,14 +53,17 @@ impl NoSQLInferenceEngine {
         self
     }
 
-    async fn infer_from_mongodb(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    async fn infer_from_mongodb(
+        &self,
+        config: &StorageConfig,
+    ) -> Result<Vec<TableDef>, NisabaError> {
         let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
         let conn_str = config.connection_string()?;
         let db_name = config.clone().database.unwrap();
 
         let rt = Runtime::new()?;
 
-        let table_defs: Result<Vec<TableDef>, NError> = rt.block_on(async {
+        let table_defs: Result<Vec<TableDef>, NisabaError> = rt.block_on(async {
             let client = Client::with_uri_str(conn_str).await?;
 
             let db = client.database(&db_name);
@@ -163,7 +166,7 @@ impl NoSQLInferenceEngine {
         collection_name: &str,
         docs: &[Document],
         silo_id: &str,
-    ) -> Result<(Vec<SourceField>, Arc<Schema>), NError> {
+    ) -> Result<(Vec<SourceField>, Arc<Schema>), NisabaError> {
         let mut field_types: HashMap<String, DataType> = HashMap::new();
 
         // Safe assumption to use the first document to infer types
@@ -217,7 +220,7 @@ impl NoSQLInferenceEngine {
         &self,
         docs: &[Document],
         schema: Arc<Schema>,
-    ) -> Result<RecordBatch, NError> {
+    ) -> Result<RecordBatch, NisabaError> {
         let mut columns: Vec<ArrayRef> = Vec::new();
 
         for field in schema.fields() {
@@ -319,10 +322,10 @@ impl NoSQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for NoSQLInferenceEngine {
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         match config.backend {
             StorageBackend::MongoDB => block_on(self.infer_from_mongodb(config)),
-            _ => Err(NError::Unsupported(format!(
+            _ => Err(NisabaError::Unsupported(format!(
                 "{:?} NoSQL store provided unsupported by NoSQL engine",
                 config.backend
             ))),

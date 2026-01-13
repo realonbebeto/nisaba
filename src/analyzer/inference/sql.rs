@@ -30,7 +30,7 @@ use crate::{
             table_def_to_arrow_schema,
         },
     },
-    error::NError,
+    error::NisabaError,
     types::TableDef,
 };
 
@@ -60,7 +60,7 @@ impl SQLInferenceEngine {
         self
     }
 
-    async fn infer_from_mysql(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    async fn infer_from_mysql(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         let conn_str = config.connection_string()?;
 
         let pool = MySqlPool::connect(&conn_str).await?;
@@ -93,7 +93,10 @@ impl SQLInferenceEngine {
         Ok(table_defs)
     }
 
-    async fn infer_from_postgres(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    async fn infer_from_postgres(
+        &self,
+        config: &StorageConfig,
+    ) -> Result<Vec<TableDef>, NisabaError> {
         let conn_str = config.connection_string()?;
 
         let pool = PgPool::connect(&conn_str).await?;
@@ -126,7 +129,10 @@ impl SQLInferenceEngine {
         Ok(table_defs)
     }
 
-    async fn infer_from_sqlite(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    async fn infer_from_sqlite(
+        &self,
+        config: &StorageConfig,
+    ) -> Result<Vec<TableDef>, NisabaError> {
         let conn_str = config.connection_string()?;
 
         let pool = SqlitePool::connect(&conn_str).await?;
@@ -276,12 +282,12 @@ impl SQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for SQLInferenceEngine {
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
+    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         match config.backend {
             StorageBackend::MySQL => block_on(self.infer_from_mysql(config)),
             StorageBackend::PostgreSQL => block_on(self.infer_from_postgres(config)),
             StorageBackend::SQLite => block_on(self.infer_from_sqlite(config)),
-            _ => Err(NError::Unsupported(format!(
+            _ => Err(NisabaError::Unsupported(format!(
                 "{:?} SQL store provided unsupported by SQL engine",
                 config.backend
             ))),
@@ -308,7 +314,7 @@ async fn read_postgres_table(
     pool: &PgPool,
     table_def: &TableDef,
     sample_size: usize,
-) -> Result<Option<RecordBatch>, NError> {
+) -> Result<Option<RecordBatch>, NisabaError> {
     let query = format!("SELECT * FROM {} LIMIT $1", table_def.name);
     let rows = sqlx::query(&query)
         .bind(sample_size as i32)
@@ -321,7 +327,7 @@ async fn read_postgres_table(
 async fn read_postgres_fields(
     pool: &PgPool,
     config: &StorageConfig,
-) -> Result<Vec<SourceField>, NError> {
+) -> Result<Vec<SourceField>, NisabaError> {
     let silo_id = format!("{}-{}", config.backend, config.host.clone().unwrap());
 
     let query = "SELECT table_schema, 
@@ -380,7 +386,7 @@ async fn read_postgres_fields(
 fn build_record_batches<R>(
     rows: Vec<R>,
     table_def: &TableDef,
-) -> Result<Option<RecordBatch>, NError>
+) -> Result<Option<RecordBatch>, NisabaError>
 where
     R: Row,
     for<'a> &'a str: sqlx::ColumnIndex<R>,
@@ -442,7 +448,7 @@ async fn read_mysql_table(
     pool: &MySqlPool,
     table_def: &TableDef,
     sample_size: usize,
-) -> Result<Option<RecordBatch>, NError> {
+) -> Result<Option<RecordBatch>, NisabaError> {
     let query = format!("SELECT * FROM {} LIMIT ?", table_def.name);
     let rows = sqlx::query(&query)
         .bind(sample_size as i32)
@@ -455,7 +461,7 @@ async fn read_mysql_table(
 async fn read_mysql_fields(
     pool: &MySqlPool,
     config: &StorageConfig,
-) -> Result<Vec<SourceField>, NError> {
+) -> Result<Vec<SourceField>, NisabaError> {
     let silo_id = format!("{}-{}", config.backend, config.host.clone().unwrap());
 
     let query = "SELECT 
@@ -518,7 +524,7 @@ async fn read_sqlite_table(
     pool: &SqlitePool,
     table_def: &TableDef,
     sample_size: usize,
-) -> Result<Option<RecordBatch>, NError> {
+) -> Result<Option<RecordBatch>, NisabaError> {
     let query = format!("SELECT * FROM {} LIMIT $1", table_def.name);
     let rows = sqlx::query(&query)
         .bind(sample_size as i32)
@@ -531,7 +537,7 @@ async fn read_sqlite_table(
 async fn read_sqlite_fields(
     pool: &SqlitePool,
     config: &StorageConfig,
-) -> Result<Vec<SourceField>, NError> {
+) -> Result<Vec<SourceField>, NisabaError> {
     let silo_id = format!("{}-{}", config.backend, config.dir_path.clone().unwrap());
 
     let mut source_fields = Vec::new();
@@ -670,7 +676,7 @@ fn append_value<'r, R>(
     row: &R,
     index: &'r str,
     field: &Field,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -727,7 +733,7 @@ fn append_binary<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -752,7 +758,7 @@ fn append_bool<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -780,7 +786,7 @@ fn append_date<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -844,7 +850,7 @@ fn append_decimal<'r, R>(
     row: &R,
     index: &'r str,
     scale: i8,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -878,7 +884,7 @@ fn append_float32<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -906,7 +912,7 @@ fn append_float64<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -936,7 +942,7 @@ fn append_int<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -970,7 +976,7 @@ fn append_string<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,
@@ -995,7 +1001,7 @@ fn append_time<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     T: ArrowPrimitiveType<Native = i64>,
@@ -1025,7 +1031,7 @@ fn append_timestamp<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     T: ArrowPrimitiveType<Native = i64>,
@@ -1091,7 +1097,7 @@ fn append_fixed_size_binary<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
     index: &'r str,
-) -> Result<(), NError>
+) -> Result<(), NisabaError>
 where
     R: Row,
     &'r str: sqlx::ColumnIndex<R>,

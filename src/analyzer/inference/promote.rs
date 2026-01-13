@@ -11,7 +11,7 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::error::NError;
+use crate::error::NisabaError;
 
 // ====================================
 // Casting Safety Analysis
@@ -181,7 +181,7 @@ impl<'a> ColumnStats<'a> {
         }
     }
 
-    fn extract_stats_from_int_array(stats: &mut ColumnStats) -> Result<(), NError> {
+    fn extract_stats_from_int_array(stats: &mut ColumnStats) -> Result<(), NisabaError> {
         let values = stats
             .sample_values
             .as_any()
@@ -205,7 +205,7 @@ impl<'a> ColumnStats<'a> {
         Ok(())
     }
 
-    fn extract_stats_from_string_array(stats: &mut ColumnStats) -> Result<(), NError> {
+    fn extract_stats_from_string_array(stats: &mut ColumnStats) -> Result<(), NisabaError> {
         let values = stats
             .sample_values
             .as_any()
@@ -319,7 +319,7 @@ impl TypeLatticeResolver {
         &self,
         source: &DataType,
         stats: &ColumnStats,
-    ) -> Result<PromotionResult, NError> {
+    ) -> Result<PromotionResult, NisabaError> {
         let mut dest_type: DataType = source.clone();
         let mut confidence = 0.98;
         let mut datetime_precision = stats.datetime_precision;
@@ -470,7 +470,11 @@ impl TypeLatticeResolver {
         })
     }
     // Byte array Detection
-    fn detect_type_from_string(&self, stats: &ColumnStats, dest: &DataType) -> Result<f32, NError> {
+    fn detect_type_from_string(
+        &self,
+        stats: &ColumnStats,
+        dest: &DataType,
+    ) -> Result<f32, NisabaError> {
         let mut logp = match dest {
             &DataType::Utf8 => -0.9,
             DataType::FixedSizeBinary(16) => -1.61,
@@ -540,7 +544,7 @@ impl TypeLatticeResolver {
         }
     }
 
-    fn uuid_likelihood(&self, stats: &ColumnStats) -> Result<f32, NError> {
+    fn uuid_likelihood(&self, stats: &ColumnStats) -> Result<f32, NisabaError> {
         if stats.character_min_length < Some(32) || stats.character_max_length != Some(45) {
             return Ok(0.0);
         }
@@ -571,7 +575,7 @@ impl TypeLatticeResolver {
         Ok(0.0)
     }
 
-    fn array_likelihood(&self, stats: &ColumnStats) -> Result<f32, NError> {
+    fn array_likelihood(&self, stats: &ColumnStats) -> Result<f32, NisabaError> {
         let values = stats
             .sample_values
             .as_any()
@@ -599,7 +603,7 @@ impl TypeLatticeResolver {
         Ok(0.0)
     }
 
-    fn json_likelihood(&self, stats: &ColumnStats) -> Result<f32, NError> {
+    fn json_likelihood(&self, stats: &ColumnStats) -> Result<f32, NisabaError> {
         let values = stats
             .sample_values
             .as_any()
@@ -622,7 +626,11 @@ impl TypeLatticeResolver {
         Ok(0.0)
     }
 
-    fn datetime_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> Result<f32, NError> {
+    fn datetime_likelihood(
+        &self,
+        stats: &ColumnStats,
+        dest: &DataType,
+    ) -> Result<f32, NisabaError> {
         let values = stats
             .sample_values
             .as_any()
@@ -1039,7 +1047,7 @@ pub fn cast_utf8_column(
     batch: &mut RecordBatch,
     column_name: &str,
     dest: &DataType,
-) -> Result<(), NError> {
+) -> Result<(), NisabaError> {
     let schema = batch.schema();
 
     let index = schema
@@ -1092,7 +1100,7 @@ pub fn cast_utf8_column(
 }
 
 // Casting Utf8 to FixedSizeBinary(16) - UUID
-pub fn utf8_to_uuid(array: &ArrayRef) -> Result<ArrayRef, NError> {
+pub fn utf8_to_uuid(array: &ArrayRef) -> Result<ArrayRef, NisabaError> {
     let string_array =
         array
             .as_any()

@@ -17,7 +17,7 @@ use crate::{
         report::{ClusterDef, FieldMatch},
         retriever::Storable,
     },
-    error::NError,
+    error::NisabaError,
     types::Matchable,
 };
 
@@ -127,7 +127,7 @@ impl Storable for FieldDef {
         "field_def"
     }
 
-    fn embedding(&self, _config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NError> {
+    fn embedding(&self, _config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NisabaError> {
         let mut model =
             TextEmbedding::try_new(InitOptions::new(EmbeddingModel::MultilingualE5Small))?;
 
@@ -142,7 +142,7 @@ impl Storable for FieldDef {
         items: &[Self],
         schema: Arc<Schema>,
         config: Arc<AnalyzerConfig>,
-    ) -> Result<RecordBatch, NError>
+    ) -> Result<RecordBatch, NisabaError>
     where
         Self: std::marker::Sized,
     {
@@ -276,7 +276,9 @@ impl Storable for FieldDef {
         Ok(batch)
     }
 
-    fn from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<Self::SearchResult>, NError> {
+    fn from_record_batches(
+        batches: Vec<RecordBatch>,
+    ) -> Result<Vec<Self::SearchResult>, NisabaError> {
         let mut schemas = Vec::new();
 
         for batch in batches {

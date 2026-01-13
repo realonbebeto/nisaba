@@ -12,7 +12,7 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::error::{GraphError, NError};
+use crate::error::NisabaError;
 
 pub fn deterministic_projection(input: Vector1<f32>, d_out: usize, seed: u64) -> DVector<f32> {
     let d_in = input.len();
@@ -58,7 +58,7 @@ pub struct ArrowGraph {
 
 impl ArrowGraph {
     /// Create a new graph from nodes and edges RecordBatches
-    pub fn new(nodes: RecordBatch, edges: RecordBatch) -> Result<Self, NError> {
+    pub fn new(nodes: RecordBatch, edges: RecordBatch) -> Result<Self, NisabaError> {
         let indexes = GraphIndexes::build(&nodes, &edges)?;
 
         Ok(ArrowGraph {
@@ -73,7 +73,7 @@ impl ArrowGraph {
     }
 
     /// Create a graph from just edges (nodes will be inferred)
-    pub fn from_edges(edges: RecordBatch) -> Result<Self, NError> {
+    pub fn from_edges(edges: RecordBatch) -> Result<Self, NisabaError> {
         let nodes = Self::infer_nodes(&edges)?;
         Self::new(nodes, edges)
     }
@@ -88,7 +88,7 @@ impl ArrowGraph {
         self.indexes.neighbors(node_id)
     }
 
-    fn infer_nodes(edges: &RecordBatch) -> Result<RecordBatch, NError> {
+    fn infer_nodes(edges: &RecordBatch) -> Result<RecordBatch, NisabaError> {
         // Infer nodes from the edges
         let source_col = edges
             .column(0)
@@ -164,7 +164,7 @@ pub struct GraphIndexes {
 
 impl GraphIndexes {
     /// Build GraphIndexes from node, edge record batches
-    pub fn build(nodes: &RecordBatch, edges: &RecordBatch) -> Result<Self, NError> {
+    pub fn build(nodes: &RecordBatch, edges: &RecordBatch) -> Result<Self, NisabaError> {
         let mut adjacency_list: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
         let mut reverse_adjacency_list: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
         let mut node_index: HashMap<Uuid, usize> = HashMap::new();
@@ -203,7 +203,7 @@ impl GraphIndexes {
             };
 
             if source_array.len() != target_array.len() {
-                Err(GraphError::GraphConstruction(
+                Err(NisabaError::GraphConstruction(
                     "Source and target columns must have the same length".into(),
                 ))?
             }
@@ -256,16 +256,16 @@ impl GraphIndexes {
         })
     }
 
-    fn extract_ids(column_data: &dyn Array) -> Result<Vec<Option<Uuid>>, NError> {
+    fn extract_ids(column_data: &dyn Array) -> Result<Vec<Option<Uuid>>, NisabaError> {
         if let Some(binary_array) = column_data.as_any().downcast_ref::<FixedSizeBinaryArray>() {
-            Ok(Ok::<Result<Vec<Option<Uuid>>, uuid::Error>, NError>(
+            Ok(Ok::<Result<Vec<Option<Uuid>>, uuid::Error>, NisabaError>(
                 binary_array
                     .iter()
                     .map(|v| v.map(Uuid::from_slice).transpose())
                     .collect(),
             )??)
         } else {
-            Err(GraphError::GraphConstruction(
+            Err(NisabaError::GraphConstruction(
                 "ID column must be either StringArray or FixedSizeBinaryArray".into(),
             ))?
         }
@@ -296,19 +296,19 @@ pub fn leiden_communities(
     graph: &ArrowGraph,
     resolution: Option<f32>,
     max_iterations: Option<u32>,
-) -> Result<Vec<(Uuid, u32)>, NError> {
+) -> Result<Vec<(Uuid, u32)>, NisabaError> {
     let resolution: f32 = resolution.unwrap_or(1.0);
     let max_iterations: u32 = max_iterations.unwrap_or(10);
 
     // Validate parameters
     if resolution <= 0.0 {
-        Err(GraphError::InvalidParameter(
+        Err(NisabaError::InvalidParameter(
             "resolution must be greater than 0.0".into(),
         ))?;
     }
 
     if max_iterations == 0 {
-        Err(GraphError::InvalidParameter(
+        Err(NisabaError::InvalidParameter(
             "max_iterations must be greater than 0".into(),
         ))?;
     }
@@ -326,7 +326,7 @@ fn leiden_algorithm(
     graph: &ArrowGraph,
     resolution: f32,
     max_iterations: u32,
-) -> Result<HashMap<Uuid, u32>, NError> {
+) -> Result<HashMap<Uuid, u32>, NisabaError> {
     let node_ids: Vec<Uuid> = graph.node_ids().cloned().collect();
     let node_count = node_ids.len();
 
@@ -391,7 +391,7 @@ fn find_best_community(
     graph: &ArrowGraph,
     communities: &HashMap<Uuid, u32>,
     resolution: f32,
-) -> Result<u32, NError> {
+) -> Result<u32, NisabaError> {
     let current_community = *communities.get(node_id).unwrap();
     let mut best_community = current_community;
     let mut best_gain = 0.0;
@@ -427,7 +427,7 @@ fn calculate_modularity_gain(
     graph: &ArrowGraph,
     communities: &HashMap<Uuid, u32>,
     resolution: f32,
-) -> Result<f32, NError> {
+) -> Result<f32, NisabaError> {
     let current_community = *communities.get(node_id).unwrap();
 
     if target_community == current_community {
@@ -482,7 +482,7 @@ fn calculate_community_degree(
     community: u32,
     graph: &ArrowGraph,
     communities: &HashMap<Uuid, u32>,
-) -> Result<f32, NError> {
+) -> Result<f32, NisabaError> {
     let mut degree = 0.0;
 
     for (node_id, &node_community) in communities {
@@ -501,7 +501,7 @@ fn refine_communities(
     graph: &ArrowGraph,
     communities: &HashMap<Uuid, u32>,
     resolution: f32,
-) -> Result<HashMap<Uuid, u32>, NError> {
+) -> Result<HashMap<Uuid, u32>, NisabaError> {
     let mut refined_communities = communities.clone();
 
     // Group nodes by community
@@ -545,7 +545,7 @@ fn split_community(
     nodes: &[Uuid],
     graph: &ArrowGraph,
     _resolution: f32,
-) -> Result<Vec<Vec<Uuid>>, NError> {
+) -> Result<Vec<Vec<Uuid>>, NisabaError> {
     if nodes.len() <= 2 {
         return Ok(vec![nodes.to_vec()]);
     }
@@ -588,7 +588,9 @@ fn split_community(
     Ok(subcommunities)
 }
 
-fn renumber_communities(communities: HashMap<Uuid, u32>) -> Result<HashMap<Uuid, u32>, NError> {
+fn renumber_communities(
+    communities: HashMap<Uuid, u32>,
+) -> Result<HashMap<Uuid, u32>, NisabaError> {
     let mut community_mapping = HashMap::new();
     let mut next_id = 0u32;
     let mut renumbered = HashMap::new();

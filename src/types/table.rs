@@ -18,7 +18,7 @@ use crate::{
         report::{ClusterDef, TableMatch},
         retriever::Storable,
     },
-    error::NError,
+    error::NisabaError,
     types::{FieldDef, Matchable, get_field_defs},
 };
 
@@ -82,7 +82,7 @@ impl Storable for TableDef {
         "table_def"
     }
 
-    fn embedding(&self, config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NError> {
+    fn embedding(&self, config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NisabaError> {
         let field_count = self.fields.len();
 
         // Field embedding average
@@ -108,7 +108,7 @@ impl Storable for TableDef {
         items: &[Self],
         schema: Arc<Schema>,
         config: Arc<AnalyzerConfig>,
-    ) -> Result<RecordBatch, NError>
+    ) -> Result<RecordBatch, NisabaError>
     where
         Self: std::marker::Sized,
     {
@@ -146,7 +146,9 @@ impl Storable for TableDef {
         Ok(batch)
     }
 
-    fn from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<Self::SearchResult>, NError> {
+    fn from_record_batches(
+        batches: Vec<RecordBatch>,
+    ) -> Result<Vec<Self::SearchResult>, NisabaError> {
         let mut schemas = Vec::new();
 
         for batch in batches {
@@ -303,7 +305,7 @@ impl TableDef {
 fn build_fields_array(
     tbl_schema: &[TableDef],
     config: Arc<AnalyzerConfig>,
-) -> Result<ArrayRef, NError> {
+) -> Result<ArrayRef, NisabaError> {
     // N number of fileds
     let capacity: usize = tbl_schema.iter().map(|s| s.fields.len()).sum();
 
@@ -406,7 +408,7 @@ fn build_fields_array(
     Ok(Arc::new(fields_list))
 }
 
-fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, NError> {
+fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, NisabaError> {
     let num_fields = struct_array.len();
     let mut field_defs = Vec::with_capacity(num_fields);
 

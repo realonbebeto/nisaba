@@ -17,7 +17,7 @@ use crate::{
         },
         retriever::{LatentStore, Storable},
     },
-    error::NError,
+    error::NisabaError,
     types::{FieldDef, MatchCandidate, TableDef},
 };
 
@@ -61,7 +61,10 @@ impl std::fmt::Debug for SchemaAnalyzer {
 }
 
 impl SchemaAnalyzer {
-    pub async fn analyze(&self, configs: Vec<StorageConfig>) -> Result<Vec<TableCluster>, NError> {
+    pub async fn analyze(
+        &self,
+        configs: Vec<StorageConfig>,
+    ) -> Result<Vec<TableCluster>, NisabaError> {
         // Take inputs (multiple collections/tables)
         // E.g. Vec[Collection/Table], Vec[Collection/Table], Vec[Collection/Table] ...
 
@@ -109,7 +112,7 @@ impl SchemaAnalyzer {
         Ok(clusters)
     }
 
-    async fn index_schemas(&self, schema_items: &[TableDef]) -> Result<(), NError> {
+    async fn index_schemas(&self, schema_items: &[TableDef]) -> Result<(), NisabaError> {
         let table_handler = self
             .latent_store
             .table_handler::<TableDef>(self.config.clone());
@@ -124,7 +127,7 @@ impl SchemaAnalyzer {
     async fn table_def_arrow_graph(
         &self,
         table_defs: &[TableDef],
-    ) -> Result<(ArrowGraph, Vec<MatchExplanation>), NError> {
+    ) -> Result<(ArrowGraph, Vec<MatchExplanation>), NisabaError> {
         let columns = vec![
             "id".to_string(),
             "silo_id".to_string(),
@@ -145,7 +148,7 @@ impl SchemaAnalyzer {
     async fn field_def_arrow_graph(
         &self,
         field_defs: &[FieldDef],
-    ) -> Result<(ArrowGraph, Vec<MatchExplanation>), NError> {
+    ) -> Result<(ArrowGraph, Vec<MatchExplanation>), NisabaError> {
         let columns = vec![
             "id".to_string(),
             "silo_id".to_string(),
@@ -173,7 +176,7 @@ impl SchemaAnalyzer {
         defs: &[T],
         columns: Vec<String>,
         filter_fn: impl Fn(&T, &T::SearchResult, f32) -> bool,
-    ) -> Result<(ArrowGraph, Vec<MatchExplanation>), NError>
+    ) -> Result<(ArrowGraph, Vec<MatchExplanation>), NisabaError>
     where
         T: Storable,
         T::SearchResult: MatchCandidate<Body = T>,
@@ -258,7 +261,7 @@ impl SchemaAnalyzer {
         table_defs: &[TableDef],
         resolution: Option<f32>,
         max_iterations: Option<u32>,
-    ) -> Result<Vec<TableCluster>, NError> {
+    ) -> Result<Vec<TableCluster>, NisabaError> {
         let leiden_result = leiden_communities(graph, resolution, max_iterations)?;
 
         let mut communities: HashMap<u32, Vec<TableResult>> = HashMap::new();
@@ -295,7 +298,7 @@ impl SchemaAnalyzer {
         &self,
         clusters: &mut [TableCluster],
         table_defs: &[TableDef],
-    ) -> Result<(), NError> {
+    ) -> Result<(), NisabaError> {
         for tbl_cluster in clusters {
             let table_ids: Vec<Uuid> = tbl_cluster.tables.iter().map(|v| v.id).collect();
             let field_defs = table_defs
@@ -362,7 +365,7 @@ impl SchemaAnalyzer {
         resolution: Option<f32>,
         max_iterations: Option<u32>,
         build_cluster: impl Fn(u32, Vec<R>) -> C,
-    ) -> Result<Vec<C>, NError>
+    ) -> Result<Vec<C>, NisabaError>
     where
         D: ClusterDef<Id = Uuid>,
         R: ClusterItem<Def = D>,
@@ -393,7 +396,7 @@ impl SchemaAnalyzer {
         field_defs: &[FieldDef],
         resolution: Option<f32>,
         max_iterations: Option<u32>,
-    ) -> Result<Vec<FieldCluster>, NError> {
+    ) -> Result<Vec<FieldCluster>, NisabaError> {
         let leiden_result = leiden_communities(graph, resolution, max_iterations)?;
 
         let mut communities: HashMap<u32, Vec<FieldResult>> = HashMap::new();
@@ -430,7 +433,7 @@ impl SchemaAnalyzer {
         &self,
         query_schema: &T,
         columns: Vec<String>,
-    ) -> Result<Vec<T::SearchResult>, NError> {
+    ) -> Result<Vec<T::SearchResult>, NisabaError> {
         let table_handler = self.latent_store.table_handler::<T>(self.config.clone());
 
         let candidates = table_handler

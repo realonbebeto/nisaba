@@ -12,7 +12,7 @@ use lancedb::{
 use std::{marker::PhantomData, path::PathBuf, sync::Arc};
 use uuid::Uuid;
 
-use crate::{analyzer::AnalyzerConfig, error::NError};
+use crate::{analyzer::AnalyzerConfig, error::NisabaError};
 
 pub trait Storable: Send + Sync {
     /// The result type returned from similarity search
@@ -35,15 +35,17 @@ pub trait Storable: Send + Sync {
         items: &[Self],
         schema: Arc<Schema>,
         config: Arc<AnalyzerConfig>,
-    ) -> Result<RecordBatch, NError>
+    ) -> Result<RecordBatch, NisabaError>
     where
         Self: std::marker::Sized;
 
     /// Convert RecordBatches to search results
-    fn from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<Self::SearchResult>, NError>;
+    fn from_record_batches(
+        batches: Vec<RecordBatch>,
+    ) -> Result<Vec<Self::SearchResult>, NisabaError>;
 
     /// Get the embedding vector for this item
-    fn embedding(&self, config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NError>;
+    fn embedding(&self, config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NisabaError>;
 }
 
 #[derive(Clone)]
@@ -91,7 +93,7 @@ pub struct TableHandler<T: Storable> {
 }
 
 impl<T: Storable> TableHandler<T> {
-    pub async fn initialize(&self) -> Result<(), NError> {
+    pub async fn initialize(&self) -> Result<(), NisabaError> {
         let scheme = T::schema();
 
         let tbl = self
@@ -113,7 +115,7 @@ impl<T: Storable> TableHandler<T> {
         Ok(())
     }
 
-    pub async fn store(&self, items: &[T]) -> Result<(), NError> {
+    pub async fn store(&self, items: &[T]) -> Result<(), NisabaError> {
         let tbl = self.conn.open_table(T::vtable_name()).execute().await?;
 
         let schema = T::schema();
@@ -132,7 +134,7 @@ impl<T: Storable> TableHandler<T> {
         item: &T,
         config: Arc<AnalyzerConfig>,
         columns: Vec<String>,
-    ) -> Result<Vec<T::SearchResult>, NError> {
+    ) -> Result<Vec<T::SearchResult>, NisabaError> {
         let embedding = item.embedding(self.config.clone())?;
 
         let table = self.conn.open_table(T::vtable_name()).execute().await?;
@@ -153,7 +155,7 @@ impl<T: Storable> TableHandler<T> {
         Ok(results)
     }
 
-    pub async fn clear_table(&self) -> Result<(), NError> {
+    pub async fn clear_table(&self) -> Result<(), NisabaError> {
         let table = self.conn.open_table(T::vtable_name()).execute().await?;
 
         table.delete("true").await?;

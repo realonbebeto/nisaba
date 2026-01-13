@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::NError;
+use crate::error::NisabaError;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum StorageBackend {
@@ -68,9 +68,9 @@ impl StorageConfig {
     pub fn new_file_backend(
         backend: StorageBackend,
         dir_path: impl Into<String>,
-    ) -> Result<Self, NError> {
+    ) -> Result<Self, NisabaError> {
         if !backend.is_file_based() {
-            return Err(NError::InvalidDetail(format!(
+            return Err(NisabaError::Unsupported(format!(
                 "{} is not a file-based store",
                 backend
             )));
@@ -100,16 +100,16 @@ impl StorageConfig {
         username: impl Into<String>,
         password: impl Into<String>,
         namespace: Option<impl Into<String>>,
-    ) -> Result<Self, NError> {
+    ) -> Result<Self, NisabaError> {
         if !backend.is_network_based() {
-            return Err(NError::InvalidDetail(format!(
+            return Err(NisabaError::Unsupported(format!(
                 "{} is not a network-based store type",
                 backend
             )));
         }
 
         if !backend.supports_namespace() && namespace.is_some() {
-            return Err(NError::InvalidDetail(format!(
+            return Err(NisabaError::Unsupported(format!(
                 "{} does not require namespace/schema",
                 backend
             )));
@@ -147,7 +147,7 @@ impl StorageConfig {
         database: impl Into<String>,
         username: impl Into<String>,
         password: impl Into<String>,
-    ) -> Result<Self, NError> {
+    ) -> Result<Self, NisabaError> {
         let host: String = host.into();
         let database: String = database.into();
         let username: String = username.into();
@@ -170,7 +170,7 @@ impl StorageConfig {
         })
     }
 
-    pub fn connection_string(&self) -> Result<String, NError> {
+    pub fn connection_string(&self) -> Result<String, NisabaError> {
         self.validate()?;
 
         match self.backend {
@@ -179,7 +179,7 @@ impl StorageConfig {
             | StorageBackend::Parquet
             | StorageBackend::SQLite => match &self.dir_path {
                 Some(path) => Ok(path.clone()),
-                None => Err(NError::InvalidDetail(format!(
+                None => Err(NisabaError::Missing(format!(
                     "Directory with {} not provided",
                     self.backend
                 ))),
@@ -204,7 +204,7 @@ impl StorageConfig {
                         ))
                     }
 
-                    _ => Err(NError::InvalidDetail(
+                    _ => Err(NisabaError::Missing(
                         "Proper MySQL connection details not provided".into(),
                     )),
                 }
@@ -233,7 +233,7 @@ impl StorageConfig {
                             ))
                         }
                     }
-                    _ => Err(NError::InvalidDetail(
+                    _ => Err(NisabaError::Missing(
                         "Proper MongoDB connection details not provided".into(),
                     )),
                 }
@@ -255,14 +255,14 @@ impl StorageConfig {
                         database,
                     ))
                 }
-                _ => Err(NError::InvalidDetail(
+                _ => Err(NisabaError::Missing(
                     "Proper PostgreSQL connection details not provided".into(),
                 )),
             },
         }
     }
 
-    pub fn validate(&self) -> Result<(), NError> {
+    pub fn validate(&self) -> Result<(), NisabaError> {
         match self.backend {
             StorageBackend::Csv
             | StorageBackend::Excel
@@ -274,47 +274,47 @@ impl StorageConfig {
         }
     }
 
-    fn validate_file_based_config(&self) -> Result<(), NError> {
+    fn validate_file_based_config(&self) -> Result<(), NisabaError> {
         match &self.dir_path {
             Some(path) => Self::validate_path(path),
-            None => Err(NError::InvalidDetail(format!(
+            None => Err(NisabaError::Missing(format!(
                 "Directory path required for {}",
                 self.backend
             ))),
         }
     }
 
-    fn validate_network_based_config(&self) -> Result<(), NError> {
-        let host = self.host.as_ref().ok_or(NError::InvalidDetail(format!(
+    fn validate_network_based_config(&self) -> Result<(), NisabaError> {
+        let host = self.host.as_ref().ok_or(NisabaError::Missing(format!(
             "Host required for {}",
             self.backend
         )))?;
 
         // Port is not required for MongoDB SRV connection
         if !self.use_srv || self.backend != StorageBackend::MongoDB {
-            let port = self.port.ok_or(NError::InvalidDetail(format!(
+            let port = self.port.ok_or(NisabaError::Missing(format!(
                 "Port required for {}",
                 self.backend
             )))?;
 
             Self::validate_port(port)?;
         } else if self.use_srv && self.port.is_some() {
-            return Err(NError::InvalidDetail(
+            return Err(NisabaError::Invalid(
                 "Port should not be specified for MongoDB SRV connections".into(),
             ));
         }
 
-        let database = self.database.as_ref().ok_or(NError::InvalidDetail(format!(
+        let database = self.database.as_ref().ok_or(NisabaError::Missing(format!(
             "Database required for {}",
             self.backend
         )))?;
 
-        let username = self.username.as_ref().ok_or(NError::InvalidDetail(format!(
+        let username = self.username.as_ref().ok_or(NisabaError::Missing(format!(
             "Username required for {}",
             self.backend
         )))?;
 
-        let password = self.password.as_ref().ok_or(NError::InvalidDetail(format!(
+        let password = self.password.as_ref().ok_or(NisabaError::Missing(format!(
             "Password required for {}",
             self.backend
         )))?;
@@ -326,26 +326,26 @@ impl StorageConfig {
         Ok(())
     }
 
-    fn validate_path(path: &str) -> Result<(), NError> {
+    fn validate_path(path: &str) -> Result<(), NisabaError> {
         if path.trim().is_empty() {
-            return Err(NError::InvalidDetail("Path cannot be empty".into()));
+            return Err(NisabaError::Missing("Path cannot be empty".into()));
         }
 
         let path_obj = Path::new(path);
         if path_obj.as_os_str().is_empty() {
-            return Err(NError::InvalidDetail("Invalid path format".into()));
+            return Err(NisabaError::Invalid("Invalid path format".into()));
         }
 
         Ok(())
     }
 
-    fn validate_host(host: &str) -> Result<(), NError> {
+    fn validate_host(host: &str) -> Result<(), NisabaError> {
         if host.trim().is_empty() {
-            return Err(NError::InvalidDetail("Host cannot be empty".into()));
+            return Err(NisabaError::Missing("Host cannot be empty".into()));
         }
 
         if host.contains(|c: char| c.is_whitespace() || c == '@' || c == '/') {
-            return Err(NError::InvalidDetail(
+            return Err(NisabaError::Invalid(
                 "Host contains invalid characters".into(),
             ));
         }
@@ -353,22 +353,20 @@ impl StorageConfig {
         Ok(())
     }
 
-    fn validate_port(port: u16) -> Result<(), NError> {
+    fn validate_port(port: u16) -> Result<(), NisabaError> {
         if port == 0 {
-            return Err(NError::InvalidDetail("Port cannot be 0".into()));
+            return Err(NisabaError::Invalid("Port cannot be 0".into()));
         }
         Ok(())
     }
 
-    fn validate_database_name(database: &str) -> Result<(), NError> {
+    fn validate_database_name(database: &str) -> Result<(), NisabaError> {
         if database.trim().is_empty() {
-            return Err(NError::MissingDetail(
-                "Database name cannot be empty".into(),
-            ));
+            return Err(NisabaError::Missing("Database name cannot be empty".into()));
         }
 
         if database.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
-            return Err(NError::InvalidDetail(
+            return Err(NisabaError::Invalid(
                 "Database name contains invalid characters".into(),
             ));
         }
@@ -376,22 +374,22 @@ impl StorageConfig {
         Ok(())
     }
 
-    fn validate_namespace(namespace: &str) -> Result<(), NError> {
+    fn validate_namespace(namespace: &str) -> Result<(), NisabaError> {
         if namespace.contains(|c: char| c.is_whitespace() || c == '@' || c == '/' || c == '\\') {
-            return Err(NError::InvalidDetail(
+            return Err(NisabaError::Invalid(
                 "Namespace/schema contains invalid characters".into(),
             ));
         }
         Ok(())
     }
 
-    fn validate_credentials(username: &str, password: &str) -> Result<(), NError> {
+    fn validate_credentials(username: &str, password: &str) -> Result<(), NisabaError> {
         if username.trim().is_empty() {
-            return Err(NError::MissingDetail("Username cannot be empty".into()));
+            return Err(NisabaError::Missing("Username cannot be empty".into()));
         }
 
         if password.trim().is_empty() {
-            return Err(NError::MissingDetail("Password cannot be empty".into()));
+            return Err(NisabaError::Missing("Password cannot be empty".into()));
         }
 
         Ok(())
