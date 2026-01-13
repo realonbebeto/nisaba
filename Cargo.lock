@@ -5020,6 +5020,7 @@ dependencies = [
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.17",
  "tokio",
  "uuid",
