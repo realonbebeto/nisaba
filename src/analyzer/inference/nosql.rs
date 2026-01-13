@@ -1,10 +1,16 @@
-use arrow::datatypes::{DataType, Field, Fields, TimeUnit};
+use arrow::{
+    array::{
+        ArrayRef, BinaryArray, BooleanArray, Decimal128Array, Float64Array, Int32Array, Int64Array,
+        NullArray, RecordBatch, StringArray, TimestampMillisecondArray,
+    },
+    datatypes::{DataType, Field, Fields, Schema, TimeUnit},
+};
 use futures::{TryStreamExt, executor::block_on};
 use mongodb::{
     Client,
     bson::{Bson, Document, doc},
-    options::ClientOptions,
 };
+use tokio::runtime::Runtime;
 
 use std::{collections::HashMap, sync::Arc};
 use uuid::Uuid;
@@ -12,7 +18,10 @@ use uuid::Uuid;
 use crate::{
     analyzer::{
         catalog::{StorageBackend, StorageConfig},
-        inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
+        inference::{
+            SchemaInferenceEngine, SourceField, compute_field_metrics, convert_into_table_defs,
+            promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
+        },
     },
     error::NError,
     types::TableDef,
@@ -44,49 +53,124 @@ impl NoSQLInferenceEngine {
         self
     }
 
-    async fn infer_from_mongodb(&self, config: &StorageConfig) -> Result<Vec<SourceField>, NError> {
+    async fn infer_from_mongodb(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
         let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
         let conn_str = config.connection_string()?;
-        let client_options = ClientOptions::parse(&conn_str).await?;
-        let db_name = client_options.clone().default_database.unwrap();
+        let db_name = config.clone().database.unwrap();
 
-        let client = Client::with_options(client_options)?;
-        let db = client.database(&db_name);
-        let collections = db.list_collection_names().await?;
+        let rt = Runtime::new()?;
 
-        let mut source_fields: Vec<SourceField> = Vec::new();
+        let table_defs: Result<Vec<TableDef>, NError> = rt.block_on(async {
+            let client = Client::with_uri_str(conn_str).await?;
 
-        for collection_name in collections {
-            let collection = db.collection::<Document>(&collection_name);
-            let mut cursor = collection
-                .find(doc! {})
-                .limit(i64::from(self.sample_size))
-                .await?;
+            let db = client.database(&db_name);
+            let collections = db.list_collection_names().await?;
 
-            let result = self
-                .mongo_collection_infer(&db_name, &collection_name, &mut cursor, &silo_id)
-                .await?;
+            let mut table_defs: Vec<TableDef> = Vec::new();
 
-            source_fields.extend(result);
-        }
+            for collection_name in collections {
+                let collection = db.collection::<Document>(&collection_name);
+                let cursor = collection
+                    .find(doc! {})
+                    .limit(i64::from(self.sample_size))
+                    .await?;
 
-        Ok(source_fields)
+                let docs: Vec<Document> = cursor.try_collect().await?;
+
+                let (result, schema) =
+                    self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
+
+                let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
+
+                let mut table_def = convert_into_table_defs(result)?;
+
+                // Promotion
+
+                for (index, field) in schema.fields().iter().enumerate() {
+                    let column = batch.column(index);
+
+                    match column.data_type() {
+                        DataType::LargeUtf8
+                        | DataType::Utf8
+                        | DataType::Int32
+                        | DataType::Int64 => {
+                            let stats = ColumnStats::new(column);
+                            let resolver = TypeLatticeResolver::new();
+                            let resolved_result = resolver.promote(column.data_type(), &stats)?;
+
+                            if let Some(ff) = table_def[0]
+                                .fields
+                                .iter_mut()
+                                .find(|f| f.name == *field.name())
+                            {
+                                ff.type_confidence = Some(resolved_result.confidence);
+
+                                // Update char_max_length
+                                match (&ff.canonical_type, &resolved_result.dest_type) {
+                                    (DataType::Utf8, DataType::Utf8)
+                                    | (DataType::LargeUtf8, DataType::LargeUtf8)
+                                    | (DataType::Utf8View, DataType::Utf8View) => {
+                                        ff.char_max_length =
+                                            resolved_result.character_maximum_length;
+                                    }
+
+                                    (_, _) => {}
+                                }
+
+                                // Update type related signals when there is a mismatch on types
+                                if ff.canonical_type != resolved_result.dest_type {
+                                    ff.canonical_type = resolved_result.dest_type;
+                                    ff.type_confidence = Some(resolved_result.confidence);
+                                    ff.is_nullable = resolved_result.nullable;
+                                    ff.char_max_length = resolved_result.character_maximum_length;
+                                    ff.numeric_precision = resolved_result.numeric_precision;
+                                    ff.numeric_scale = resolved_result.numeric_scale;
+                                    ff.datetime_precision = resolved_result.datetime_precision;
+
+                                    // Very important for field values in batch to be updated
+                                    cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                let metrics = compute_field_metrics(&batch)?;
+
+                let _ = table_def[0].fields.iter_mut().map(|f| {
+                    let fmetrics = metrics.get(&f.name);
+
+                    if let Some(m) = fmetrics {
+                        f.char_class_signature = Some(m.char_class_signature);
+                        f.is_monotonic = m.monotonicity;
+                        f.cardinality = Some(m.cardinality);
+                        f.avg_byte_length = m.avg_byte_length
+                    }
+                });
+
+                table_defs.extend(table_def);
+            }
+            Ok(table_defs)
+        });
+
+        table_defs
     }
 
-    async fn mongo_collection_infer(
+    fn mongo_collection_infer(
         &self,
         db_name: &str,
         collection_name: &str,
-        cursor: &mut mongodb::Cursor<Document>,
+        docs: &[Document],
         silo_id: &str,
-    ) -> Result<Vec<SourceField>, NError> {
+    ) -> Result<(Vec<SourceField>, Arc<Schema>), NError> {
         let mut field_types: HashMap<String, DataType> = HashMap::new();
 
-        while let Some(doc) = cursor.try_next().await? {
-            self.mongo_document_infer(&doc, &mut field_types);
-        }
+        // Safe assumption to use the first document to infer types
+        self.mongo_document_infer(&docs[0], &mut field_types);
 
-        let fields: Vec<SourceField> = field_types
+        let source_fields: Vec<SourceField> = field_types
+            .clone()
             .into_iter()
             .map(|(name, dtype)| SourceField {
                 silo_id: silo_id.into(),
@@ -104,7 +188,14 @@ impl NoSQLInferenceEngine {
             })
             .collect();
 
-        Ok(fields)
+        let schema_fields: Vec<Field> = field_types
+            .into_iter()
+            .map(|(n, t)| Field::new(n, t, true))
+            .collect();
+
+        let schema = Arc::new(Schema::new(schema_fields));
+
+        Ok((source_fields, schema))
     }
 
     fn mongo_document_infer(&self, doc: &Document, field_types: &mut HashMap<String, DataType>) {
@@ -121,20 +212,123 @@ impl NoSQLInferenceEngine {
             // TODO: Possible handling of nested documents which should help in picking max_depth/nesting
         }
     }
+
+    fn docs_to_record_batch(
+        &self,
+        docs: &[Document],
+        schema: Arc<Schema>,
+    ) -> Result<RecordBatch, NError> {
+        let mut columns: Vec<ArrayRef> = Vec::new();
+
+        for field in schema.fields() {
+            let field_name = field.name();
+
+            match field.data_type() {
+                DataType::Null => {
+                    columns.push(Arc::new(NullArray::new(docs.len())));
+                }
+                DataType::Boolean => {
+                    let values: Vec<Option<bool>> = docs
+                        .iter()
+                        .map(|doc| doc.get(field_name).and_then(|v| v.as_bool()))
+                        .collect();
+
+                    columns.push(Arc::new(BooleanArray::from(values)));
+                }
+                DataType::Int32 => {
+                    let values: Vec<Option<i32>> = docs
+                        .iter()
+                        .map(|doc| doc.get(field_name).and_then(|v| v.as_i32()))
+                        .collect();
+
+                    columns.push(Arc::new(Int32Array::from(values)));
+                }
+                DataType::Int64 => {
+                    let values: Vec<Option<i64>> = docs
+                        .iter()
+                        .map(|doc| doc.get(field_name).and_then(|v| v.as_i64()))
+                        .collect();
+
+                    columns.push(Arc::new(Int64Array::from(values)));
+                }
+
+                DataType::Timestamp(TimeUnit::Millisecond, _) => {
+                    let values: Vec<Option<i64>> = docs
+                        .iter()
+                        .map(|doc| {
+                            doc.get(field_name)
+                                .and_then(|v| v.as_datetime().map(|v| v.timestamp_millis()))
+                        })
+                        .collect();
+
+                    columns.push(Arc::new(TimestampMillisecondArray::from(values)));
+                }
+                DataType::Decimal128(_, _) => {
+                    let values: Vec<Option<i128>> = docs
+                        .iter()
+                        .map(|doc| {
+                            doc.get(field_name).and_then(|v| match v {
+                                Bson::Decimal128(d) => Some(i128::from_le_bytes(d.bytes())),
+                                _ => None,
+                            })
+                        })
+                        .collect();
+
+                    columns.push(Arc::new(Decimal128Array::from(values)));
+                }
+                DataType::Binary => {
+                    let values: Vec<Option<Vec<u8>>> = docs
+                        .iter()
+                        .map(|doc| {
+                            doc.get(field_name).and_then(|v| match v {
+                                Bson::Binary(b) => Some(b.bytes.clone()),
+                                _ => None,
+                            })
+                        })
+                        .collect();
+
+                    columns.push(Arc::new(BinaryArray::from_iter(
+                        values.iter().map(|v| v.as_deref()),
+                    )));
+                }
+                DataType::Float64 => {
+                    let values: Vec<Option<f64>> = docs
+                        .iter()
+                        .map(|doc| doc.get(field_name).and_then(|v| v.as_f64()))
+                        .collect();
+
+                    columns.push(Arc::new(Float64Array::from(values)));
+                }
+                _ => {
+                    let values: Vec<Option<String>> = docs
+                        .iter()
+                        .map(|doc| {
+                            let val = doc.get(field_name).and_then(|v| v.as_str());
+
+                            val.map(|v| v.to_owned())
+                        })
+                        .collect();
+
+                    columns.push(Arc::new(StringArray::from(values)));
+                }
+            }
+        }
+
+        Ok(RecordBatch::try_new(schema, columns)?)
+    }
 }
 
 impl SchemaInferenceEngine for NoSQLInferenceEngine {
     fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NError> {
-        let source_fields = match config.backend {
+        match config.backend {
             StorageBackend::MongoDB => block_on(self.infer_from_mongodb(config)),
             _ => Err(NError::Unsupported(format!(
                 "{:?} NoSQL store provided unsupported by NoSQL engine",
                 config.backend
             ))),
-        };
-
-        convert_into_table_defs(source_fields?)
+        }
     }
+
     fn can_handle(&self, backend: &StorageBackend) -> bool {
         matches!(backend, StorageBackend::MongoDB)
     }
@@ -205,5 +399,42 @@ fn merge_types(type_a: &DataType, type_b: &DataType) -> DataType {
             DataType::List(Arc::new(Field::new("item", elem_type, true)))
         }
         _ => DataType::Utf8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mongo_inference() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::MongoDB,
+            "localhost",
+            27017,
+            "mongo_store",
+            "mongodb",
+            "mongodb",
+            None::<String>,
+        )
+        .unwrap();
+
+        let nosql_inference = NoSQLInferenceEngine::default();
+
+        let result = block_on(nosql_inference.infer_from_mongodb(&config)).unwrap();
+
+        assert_eq!(result.len(), 1);
+
+        // release_date is read in as Integer but parquet seems to store the semantic type
+        let release_date = result
+            .iter()
+            .find(|t| t.name == "albums")
+            .unwrap()
+            .fields
+            .iter()
+            .find(|f| f.name == "release_date")
+            .unwrap();
+
+        assert!(matches!(release_date.canonical_type, DataType::Date32));
     }
 }
