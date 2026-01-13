@@ -60,6 +60,8 @@ pub struct StorageConfig {
     pub password: Option<String>,
     pub database: Option<String>,
     pub namespace: Option<String>,
+    // For MongoDB SRV connection strings
+    pub use_srv: bool,
 }
 
 impl StorageConfig {
@@ -86,6 +88,7 @@ impl StorageConfig {
             password: None,
             database: None,
             namespace: None,
+            use_srv: false,
         })
     }
 
@@ -135,6 +138,35 @@ impl StorageConfig {
             password: Some(password),
             database: Some(database),
             namespace,
+            use_srv: false,
+        })
+    }
+
+    pub fn new_mongo_srv_backend(
+        host: impl Into<String>,
+        database: impl Into<String>,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Result<Self, NError> {
+        let host: String = host.into();
+        let database: String = database.into();
+        let username: String = username.into();
+        let password: String = password.into();
+
+        Self::validate_host(&host)?;
+        Self::validate_database_name(&database)?;
+        Self::validate_credentials(&username, &password)?;
+
+        Ok(Self {
+            backend: StorageBackend::MongoDB,
+            dir_path: None,
+            host: Some(host),
+            port: None,
+            username: Some(username),
+            password: Some(password),
+            database: Some(database),
+            namespace: None,
+            use_srv: true,
         })
     }
 
@@ -178,22 +210,28 @@ impl StorageConfig {
                 }
             }
             StorageBackend::MongoDB => {
-                match (
-                    &self.username,
-                    &self.password,
-                    &self.host,
-                    &self.port,
-                    &self.database,
-                ) {
-                    (Some(username), Some(password), Some(host), Some(port), Some(database)) => {
-                        Ok(format!(
-                            "mongodb://{}:{}@{}:{}/{}?authSource=admin",
-                            Self::url_encode(username),
-                            Self::url_encode(password),
-                            host,
-                            port,
-                            database
-                        ))
+                match (&self.username, &self.password, &self.host, &self.database) {
+                    (Some(username), Some(password), Some(host), Some(database)) => {
+                        if !self.use_srv {
+                            let port = self.port.unwrap();
+
+                            Ok(format!(
+                                "mongodb://{}:{}@{}:{}/{}?authSource=admin",
+                                Self::url_encode(username),
+                                Self::url_encode(password),
+                                host,
+                                port,
+                                database
+                            ))
+                        } else {
+                            Ok(format!(
+                                "mongodb+srv://{}:{}@{}/{}?authSource=admin",
+                                Self::url_encode(username),
+                                Self::url_encode(password),
+                                host,
+                                database
+                            ))
+                        }
                     }
                     _ => Err(NError::InvalidDetail(
                         "Proper MongoDB connection details not provided".into(),
@@ -252,10 +290,19 @@ impl StorageConfig {
             self.backend
         )))?;
 
-        let port = self.port.ok_or(NError::InvalidDetail(format!(
-            "Port required for {}",
-            self.backend
-        )))?;
+        // Port is not required for MongoDB SRV connection
+        if !self.use_srv || self.backend != StorageBackend::MongoDB {
+            let port = self.port.ok_or(NError::InvalidDetail(format!(
+                "Port required for {}",
+                self.backend
+            )))?;
+
+            Self::validate_port(port)?;
+        } else if self.use_srv && self.port.is_some() {
+            return Err(NError::InvalidDetail(
+                "Port should not be specified for MongoDB SRV connections".into(),
+            ));
+        }
 
         let database = self.database.as_ref().ok_or(NError::InvalidDetail(format!(
             "Database required for {}",
@@ -273,7 +320,6 @@ impl StorageConfig {
         )))?;
 
         Self::validate_host(host)?;
-        Self::validate_port(port)?;
         Self::validate_database_name(database)?;
         Self::validate_credentials(username, password)?;
 
@@ -454,5 +500,41 @@ mod tests {
         let conn_str = config.connection_string().unwrap();
         assert!(conn_str.contains("%40"));
         assert!(conn_str.contains("%3A"));
+    }
+
+    #[test]
+    fn test_mongodb_srv_connection() {
+        let config = StorageConfig::new_mongo_srv_backend(
+            "cluster0.mongodb.net",
+            "mydb",
+            "username",
+            "password",
+        )
+        .unwrap();
+
+        let conn_str = config.connection_string().unwrap();
+
+        assert!(conn_str.starts_with("mongodb+srv://"));
+        assert_eq!(config.backend, StorageBackend::MongoDB);
+    }
+
+    #[test]
+    fn test_mongodb_standard_connection() {
+        let config = StorageConfig::new_network_backend(
+            StorageBackend::MongoDB,
+            "localhost",
+            27017,
+            "mydb",
+            "username",
+            "password",
+            None::<String>,
+        )
+        .unwrap();
+
+        let conn_str = config.connection_string().unwrap();
+
+        assert!(conn_str.starts_with("mongodb://"));
+        assert!(conn_str.contains(":27017"));
+        assert!(!conn_str.starts_with("mongodb+srv://"));
     }
 }
