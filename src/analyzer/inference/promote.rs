@@ -637,9 +637,10 @@ impl TypeLatticeResolver {
                     "%d%b%Y",
                     "%y/%m/%d",
                     "%Y-%m-%d",
+                    "%d-%m-%Y",
                     "%a, %d %b %Y",
                     "%d/%b/%Y",
-                    "%Y%m%d%",
+                    "%Y%m%d",
                 ];
 
                 if values.iter().all(|s| {
