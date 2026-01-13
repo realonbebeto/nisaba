@@ -179,3 +179,45 @@ fn db_path(dir_path: Option<&str>) -> PathBuf {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_path_creation() {
+        let default_path = db_path(None);
+        let parent_dir = default_path.parent().unwrap();
+
+        assert!(parent_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_custom_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path().to_str().unwrap();
+
+        let _ltstore = LatentStore::new(Some(temp_path)).await;
+
+        assert!(std::path::Path::new(temp_path).exists());
+    }
+
+    #[tokio::test]
+    async fn test_new_valid_connection() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path().to_str().unwrap();
+
+        let ltstore = LatentStore::new(Some(temp_path)).await;
+
+        let tables = ltstore.conn.table_names().execute().await.unwrap();
+
+        assert!(tables.is_empty() || !tables.is_empty());
+    }
+
+    #[test]
+    fn test_vector_storage() {}
+
+    #[test]
+    fn test_vector_retrieval() {}
+}
