@@ -7,7 +7,7 @@ pub trait ClusterItem: Sized {
     fn from_def(id: <Self::Def as Matchable>::Id, def: &Self::Def) -> Self;
 }
 
-pub trait ClusterDef: Matchable {
+pub trait ClusterDef: Matchable + Clone {
     fn name(&self) -> &str;
     fn table_name(&self) -> &str;
 }
