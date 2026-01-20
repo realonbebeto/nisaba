@@ -3,7 +3,7 @@ mod error;
 mod types;
 
 pub use analyzer::{
-    AnalyzerConfig, ConflictScorer, SchemaAnalyzerBuilder,
+    AnalyzerConfig, SchemaAnalyzerBuilder,
     catalog::{StorageBackend, StorageConfig},
     inference::{
         FileInferenceEngine, InferenceEngineRegistry, NoSQLInferenceEngine, SQLInferenceEngine,
