@@ -1,8 +1,9 @@
 use arrow::{
     array::{
         Array, AsArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array,
-        Int32Array, RecordBatch, StringArray,
+        Int32Array, ListArray, RecordBatch, StringArray,
     },
+    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Float32Type, Int32Type, Schema},
     error::ArrowError,
 };
@@ -98,29 +99,60 @@ impl Storable for FieldDef {
         &self.silo_id
     }
 
+    fn name(&self) -> &String {
+        &self.name
+    }
+
     fn schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
+            Field::new("id", DataType::FixedSizeBinary(16), false),
             Field::new("silo_id", DataType::Utf8, false),
             Field::new("table_name", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
             Field::new("canonical_type", DataType::Utf8, false),
+            Field::new("type_confidence", DataType::Float32, true),
+            Field::new("cardinality", DataType::Float32, true),
+            Field::new("avg_byte_length", DataType::Float32, true),
+            Field::new("is_monotonic", DataType::Boolean, false),
             Field::new(
-                "metadata",
-                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                "char_class_signature",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
                 true,
             ),
-            Field::new(
-                "sample_values",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Utf8, true)), 17),
-                true,
-            ),
-            Field::new("cardinality", DataType::UInt64, true),
+            Field::new("column_default", DataType::Utf8, true),
+            Field::new("is_nullable", DataType::Boolean, false),
+            Field::new("char_max_length", DataType::Int32, true),
+            Field::new("numeric_precision", DataType::Int32, true),
+            Field::new("numeric_scale", DataType::Int32, true),
+            Field::new("datetime_precision", DataType::Int32, true),
             Field::new(
                 "vector",
                 DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
                 true,
             ),
         ]))
+    }
+
+    fn result_columns() -> Vec<String> {
+        vec![
+            "id".to_string(),
+            "silo_id".to_string(),
+            "table_name".to_string(),
+            "name".to_string(),
+            "canonical_type".to_string(),
+            "type_confidence".to_string(),
+            "cardinality".to_string(),
+            "avg_byte_length".to_string(),
+            "is_monotonic".to_string(),
+            "char_class_signature".to_string(),
+            "column_default".to_string(),
+            "is_nullable".to_string(),
+            "char_max_length".to_string(),
+            "numeric_precision".to_string(),
+            "numeric_scale".to_string(),
+            "datetime_precision".to_string(),
+            "_distance".to_string(),
+        ]
     }
 
     fn vtable_name() -> &'static str {
@@ -206,12 +238,11 @@ impl Storable for FieldDef {
         let monotonic_flag_array =
             BooleanArray::from(items.iter().map(|f| f.is_monotonic).collect::<Vec<bool>>());
 
-        // For char signature (fixed size list of 4)
-        let mut char_signatures = Vec::with_capacity(capacity * 4);
-        let mut char_signature_nulls = Vec::with_capacity(capacity);
-
-        let nullable_array =
-            BooleanArray::from(items.iter().map(|f| f.is_nullable).collect::<Vec<bool>>());
+        // For char signature
+        let mut char_class_values = Vec::with_capacity(capacity * 4);
+        let mut char_class_offsets = Vec::with_capacity(capacity);
+        char_class_offsets.push(0i32);
+        let mut char_class_nulls = Vec::with_capacity(capacity);
 
         // Column Defaults
         let column_defaults_array = StringArray::from(
@@ -221,6 +252,9 @@ impl Storable for FieldDef {
                 .collect::<Vec<Option<String>>>(),
         );
 
+        let nullable_array =
+            BooleanArray::from(items.iter().map(|f| f.is_nullable).collect::<Vec<bool>>());
+
         let char_max_lengths_array = Int32Array::from(
             items
                 .iter()
@@ -228,16 +262,45 @@ impl Storable for FieldDef {
                 .collect::<Vec<Option<i32>>>(),
         );
 
+        let numeric_precision_array = Int32Array::from(
+            items
+                .iter()
+                .map(|f| f.numeric_precision)
+                .collect::<Vec<Option<i32>>>(),
+        );
+
+        let numeric_scale_array = Int32Array::from(
+            items
+                .iter()
+                .map(|f| f.numeric_scale)
+                .collect::<Vec<Option<i32>>>(),
+        );
+
+        let datetime_precision_array = Int32Array::from(
+            items
+                .iter()
+                .map(|f| f.datetime_precision)
+                .collect::<Vec<Option<i32>>>(),
+        );
+
         for field in items {
-            // Char signature
-            if let Some(sig) = &field.char_class_signature {
-                char_signatures.extend_from_slice(sig);
-                char_signature_nulls.push(true);
+            // Char class signature
+            if let Some(ccs) = field.char_class_signature {
+                char_class_values.extend_from_slice(&ccs);
+                char_class_offsets.push(char_class_values.len() as i32);
+                char_class_nulls.push(true);
             } else {
-                char_signatures.extend_from_slice(&[0.0f32; 4]);
-                char_signature_nulls.push(false);
+                char_class_nulls.push(false);
+                char_class_offsets.push(char_class_values.len() as i32);
             }
         }
+
+        let char_class_array = ListArray::new(
+            Arc::new(Field::new("item", DataType::Float32, false)),
+            OffsetBuffer::new(ScalarBuffer::from(char_class_offsets)),
+            Arc::new(Float32Array::from(char_class_values)),
+            Some(NullBuffer::from(char_class_nulls)),
+        );
 
         let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
             items.iter().map(|item| {
@@ -265,9 +328,13 @@ impl Storable for FieldDef {
                 Arc::new(cardinalities_array),
                 Arc::new(avg_byte_lens_array),
                 Arc::new(monotonic_flag_array),
+                Arc::new(char_class_array),
                 Arc::new(column_defaults_array),
                 Arc::new(nullable_array),
                 Arc::new(char_max_lengths_array),
+                Arc::new(numeric_precision_array),
+                Arc::new(numeric_scale_array),
+                Arc::new(datetime_precision_array),
                 Arc::new(vectors),
             ],
         )
@@ -351,10 +418,16 @@ impl Storable for FieldDef {
                     ))?;
 
             // Class signature
-            let class_signature_array = batch.column(9).as_fixed_size_list();
+            let class_signature_array =
+                batch
+                    .column(9)
+                    .as_list_opt::<i32>()
+                    .ok_or(ArrowError::CastError(
+                        "Failed to downcast class signature".into(),
+                    ))?;
 
             // Column Default
-            let column_default_array = batch.column(10).as_string::<i64>();
+            let column_default_array = batch.column(10).as_string::<i32>();
 
             // Nullable
             let nullable_array = batch
@@ -377,7 +450,7 @@ impl Storable for FieldDef {
             let datetime_precision_array = batch.column(15).as_primitive::<Int32Type>();
 
             let distances = batch
-                .column(13)
+                .column(16)
                 .as_any()
                 .downcast_ref::<Float32Array>()
                 .ok_or(ArrowError::CastError(
