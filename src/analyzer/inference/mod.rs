@@ -201,7 +201,7 @@ pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef
                     v.numeric_scale,
                     v.datetime_precision,
                 )?,
-                type_confidence: None,
+                type_confidence: Some(0.98),
                 cardinality: None,
                 avg_byte_length: None,
                 is_monotonic: false,
