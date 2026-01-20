@@ -5,4 +5,4 @@ pub mod probe;
 pub mod report;
 pub mod retriever;
 
-pub use probe::{AnalyzerConfig, ConflictScorer, SchemaAnalyzerBuilder};
+pub use probe::{AnalyzerConfig, SchemaAnalyzerBuilder};
