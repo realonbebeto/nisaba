@@ -22,6 +22,8 @@ pub trait Storable: Send + Sync {
     /// Get the schema for this type
     fn schema() -> Arc<Schema>;
 
+    fn name(&self) -> &String;
+
     fn get_id(&self) -> Uuid;
 
     /// Get silo_id
@@ -30,7 +32,7 @@ pub trait Storable: Send + Sync {
     /// Get the name of the resource for this type
     fn vtable_name() -> &'static str;
 
-    /// COnvert a batch of items to a RecordBatch
+    /// Convert a batch of items to a RecordBatch
     fn to_record_batch(
         items: &[Self],
         schema: Arc<Schema>,
@@ -46,6 +48,8 @@ pub trait Storable: Send + Sync {
 
     /// Get the embedding vector for this item
     fn embedding(&self, config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NisabaError>;
+
+    fn result_columns() -> Vec<String>;
 }
 
 #[derive(Clone)]
@@ -96,21 +100,11 @@ impl<T: Storable> TableHandler<T> {
     pub async fn initialize(&self) -> Result<(), NisabaError> {
         let scheme = T::schema();
 
-        let tbl = self
-            .conn
+        self.conn
             .create_empty_table(T::vtable_name(), scheme)
             .mode(CreateTableMode::Overwrite)
             .execute()
-            .await
-            .unwrap();
-
-        let idx_builder = IvfHnswPqIndexBuilder::default();
-        let idx_builder = idx_builder.distance_type(DistanceType::Cosine);
-
-        tbl.create_index(&["vector"], Index::IvfHnswPq(idx_builder))
-            .execute()
-            .await
-            .unwrap();
+            .await?;
 
         Ok(())
     }
@@ -122,9 +116,20 @@ impl<T: Storable> TableHandler<T> {
 
         let batch = T::to_record_batch(items, schema.clone(), self.config.clone())?;
 
-        let batch_iter = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        let capacity = batch.num_rows();
 
-        tbl.add(batch_iter).execute().await?;
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+
+        tbl.add(batches).execute().await?;
+
+        let idx_builder = IvfHnswPqIndexBuilder::default();
+        let idx_builder = idx_builder.distance_type(DistanceType::Cosine);
+
+        if capacity > 256 {
+            tbl.create_index(&["vector"], Index::IvfHnswPq(idx_builder))
+                .execute()
+                .await?;
+        }
 
         Ok(())
     }
@@ -142,9 +147,12 @@ impl<T: Storable> TableHandler<T> {
         let batches = table
             .query()
             .nearest_to(embedding)?
+            .nprobes(config.top_k.unwrap_or(7))
+            .refine_factor(5)
             .limit(config.top_k.unwrap_or(7))
             .select(Select::Columns(columns))
             .distance_type(DistanceType::Cosine)
+            .distance_range(Some(0.), Some(1. - self.config.similarity_threshold))
             .execute()
             .await?
             .try_collect::<Vec<_>>()
@@ -174,7 +182,6 @@ fn db_path(dir_path: Option<&str>) -> PathBuf {
         None => {
             let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
             path.push("nisaba");
-            path.push(Uuid::now_v7().to_string());
             path
         }
     }
