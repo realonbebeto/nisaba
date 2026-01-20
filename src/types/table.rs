@@ -1,13 +1,13 @@
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, FixedSizeBinaryArray, FixedSizeListArray, Float32Array,
-        GenericListArray, RecordBatch, StringArray, StructArray,
+        Array, ArrayRef, AsArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray,
+        Float32Array, Int32Array, ListArray, RecordBatch, StringArray, StructArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Fields, Float32Type, Int32Type, Schema},
     error::ArrowError,
 };
-use nalgebra::{DVector, Vector1};
+use nalgebra::{DVector, SVector};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -22,7 +22,7 @@ use crate::{
     types::{FieldDef, Matchable, get_field_defs},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TableDef {
     pub id: Uuid,
     pub silo_id: String,
@@ -63,10 +63,14 @@ impl Storable for TableDef {
         &self.silo_id
     }
 
+    fn name(&self) -> &String {
+        &self.name
+    }
+
     fn schema() -> std::sync::Arc<arrow::datatypes::Schema> {
         let field_defs = Fields::from(get_field_defs());
         Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
+            Field::new("id", DataType::FixedSizeBinary(16), false),
             Field::new("silo_id", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
             Field::new(
@@ -74,8 +78,26 @@ impl Storable for TableDef {
                 DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
                 true,
             ),
-            Field::new("fields", DataType::Struct(field_defs), false),
+            Field::new(
+                "fields",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(field_defs),
+                    false,
+                ))),
+                false,
+            ),
         ]))
+    }
+
+    fn result_columns() -> Vec<String> {
+        vec![
+            "id".to_string(),
+            "silo_id".to_string(),
+            "name".to_string(),
+            "fields".to_string(),
+            "_distance".to_string(),
+        ]
     }
 
     fn vtable_name() -> &'static str {
@@ -86,10 +108,19 @@ impl Storable for TableDef {
         let field_count = self.fields.len();
 
         // Field embedding average
-        let mut field_embed = Vector1::from_iterator([0.0; 384]);
-        let _ = self.fields.iter().map(|f| {
-            field_embed += Vector1::from_vec(f.embedding(config.clone()).unwrap());
-        });
+        let mut field_embed: SVector<f32, 384> = SVector::<f32, 384>::zeros();
+
+        let _: Result<Vec<()>, NisabaError> = self
+            .fields
+            .iter()
+            .map(|f| {
+                let embed = f.embedding(config.clone())?;
+                let vector: SVector<f32, 384> = SVector::from_vec(embed);
+                field_embed += vector;
+
+                Ok(())
+            })
+            .collect();
 
         // Field Embedding
         let field_embed = field_embed / field_count as f32;
@@ -114,23 +145,29 @@ impl Storable for TableDef {
     {
         let ids = FixedSizeBinaryArray::try_from_iter(items.iter().map(|t| t.id.into_bytes()))?;
 
+        let silo_ids = StringArray::from(
+            items
+                .iter()
+                .map(|t| t.silo_id.clone())
+                .collect::<Vec<String>>(),
+        );
         let names = StringArray::from(
             items
                 .iter()
-                .map(|f| f.name.clone())
+                .map(|t| t.name.clone())
                 .collect::<Vec<String>>(),
         );
 
         let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
             items.iter().map(|item| {
-                let embeeding: Vec<Option<f32>> = item
+                let embedding: Vec<Option<f32>> = item
                     .embedding(config.clone())
                     .unwrap()
                     .iter()
                     .map(|&v| Some(v))
                     .collect();
 
-                Some(embeeding.into_iter())
+                Some(embedding)
             }),
             384,
         );
@@ -139,9 +176,14 @@ impl Storable for TableDef {
 
         let batch = RecordBatch::try_new(
             schema.clone(),
-            vec![Arc::new(ids), Arc::new(names), Arc::new(vectors), fields],
-        )
-        .unwrap();
+            vec![
+                Arc::new(ids),
+                Arc::new(silo_ids),
+                Arc::new(names),
+                Arc::new(vectors),
+                fields,
+            ],
+        )?;
 
         Ok(batch)
     }
@@ -177,13 +219,9 @@ impl Storable for TableDef {
                     "Failed to downcast name column".into(),
                 ))?;
 
-            let fields_list = batch
-                .column(3)
-                .as_any()
-                .downcast_ref::<GenericListArray<i64>>()
-                .ok_or(ArrowError::CastError(
-                    "Failed to downcast fields column".into(),
-                ))?;
+            let fields_list = batch.column(3).as_any().downcast_ref::<ListArray>().ok_or(
+                ArrowError::CastError("Failed to downcast fields column".into()),
+            )?;
 
             let distances = batch
                 .column(4)
@@ -195,11 +233,13 @@ impl Storable for TableDef {
 
             for row_idx in 0..batch.num_rows() {
                 let id = Uuid::from_slice(id_array.value(row_idx))?;
+
                 let silo_id = silo_id_array.value(row_idx).to_string();
 
                 let name = name_array.value(row_idx).to_string();
 
                 let field_structs = fields_list.value(0);
+
                 let field_structs = field_structs.as_any().downcast_ref::<StructArray>().ok_or(
                     ArrowError::CastError("Failed to downcast fields struct".into()),
                 )?;
@@ -214,7 +254,6 @@ impl Storable for TableDef {
                     name,
                     fields,
                 };
-
                 schemas.push(TableMatch { schema, confidence });
             }
         }
@@ -298,6 +337,8 @@ impl TableDef {
             }
         }
 
+        structure.num_fields = self.fields.len() as f32;
+
         structure
     }
 }
@@ -313,42 +354,105 @@ fn build_fields_array(
     let mut ids = Vec::with_capacity(capacity * 16);
 
     let mut silo_ids = Vec::with_capacity(capacity);
-    let mut names = Vec::with_capacity(capacity);
     let mut table_names = Vec::with_capacity(capacity);
+    let mut names = Vec::with_capacity(capacity);
     let mut canonical_types = Vec::with_capacity(capacity);
+
+    // Type Confidence
+    let mut type_confidences = Vec::with_capacity(capacity);
 
     // For cardinality
     let mut cardinalities = Vec::with_capacity(capacity);
-    let mut cardinality_nulls = Vec::with_capacity(capacity);
+
+    // Avg_byte_length
+    let mut avg_byte_lengths = Vec::with_capacity(capacity);
+
+    // Monotonicity
+    let mut is_monotonics = Vec::with_capacity(capacity);
+
+    // Char class signature
+    let mut char_class_values = Vec::with_capacity(capacity * 4);
+    let mut char_class_offsets = Vec::with_capacity(capacity);
+    char_class_offsets.push(0i32);
+    let mut char_class_nulls = Vec::with_capacity(capacity);
+
+    // Column defaults
+    let mut column_defaults = Vec::with_capacity(capacity);
+
+    // Nullable
+    let mut is_nullables = Vec::with_capacity(capacity);
+
+    // Char max length
+    let mut char_max_lengths = Vec::with_capacity(capacity);
+
+    // Numeric precision
+    let mut numeric_precisions = Vec::with_capacity(capacity);
+
+    // Numeric scale
+    let mut numeric_scales = Vec::with_capacity(capacity);
+
+    // Datetime precision
+    let mut datetime_precisions = Vec::with_capacity(capacity);
 
     // For embeddings
-    let mut embeding_values = Vec::new();
-    let mut embedding_offsets = Vec::with_capacity(capacity);
-    embedding_offsets.push(0i64);
-    let mut embedding_nulls = Vec::with_capacity(capacity);
+    let mut embedding_values = Vec::with_capacity(capacity * 384);
 
     // Outer list offsets for fields list
     let mut fields_offsets = Vec::with_capacity(tbl_schema.len() + 1);
-    fields_offsets.push(0i64);
+    fields_offsets.push(0i32);
 
-    let mut current_field_offset = 0i64;
+    let mut current_field_offset = 0i32;
 
     for scheme in tbl_schema {
         for field in &scheme.fields {
             ids.push(field.id.into_bytes());
             silo_ids.push(field.silo_id.clone());
-            names.push(field.name.clone());
             table_names.push(field.table_name.clone());
+            names.push(field.name.clone());
             canonical_types.push(field.canonical_type.to_string());
 
+            // Type confidence
+            type_confidences.push(field.type_confidence);
+
             // Cardinality
-            cardinalities.push(field.cardinality.unwrap_or_default());
-            cardinality_nulls.push(field.cardinality.is_none());
+            cardinalities.push(field.cardinality);
+
+            // Avg Byte Length
+            avg_byte_lengths.push(field.avg_byte_length);
+
+            // Monotonicity
+            is_monotonics.push(field.is_monotonic);
+
+            // Char class signature
+            if let Some(ccs) = field.char_class_signature {
+                char_class_values.extend_from_slice(&ccs);
+                char_class_offsets.push(char_class_values.len() as i32);
+                char_class_nulls.push(true);
+            } else {
+                char_class_nulls.push(false);
+                char_class_offsets.push(char_class_values.len() as i32);
+            }
+
+            // Column default
+            column_defaults.push(field.column_default.clone());
+
+            // Nullable
+            is_nullables.push(field.is_nullable);
+
+            // Char max length
+            char_max_lengths.push(field.char_max_length);
+
+            // Numeric precision
+            numeric_precisions.push(field.numeric_precision);
+
+            // Numeric scale
+            numeric_scales.push(field.numeric_scale);
+
+            // Datetime precision
+            datetime_precisions.push(field.datetime_precision);
 
             // Embeddding
-            embeding_values.extend_from_slice(&field.embedding(config.clone())?);
-            embedding_offsets.push(embeding_values.len() as i64);
-            embedding_nulls.push(false);
+            embedding_values.extend_from_slice(&field.embedding(config.clone())?);
 
             current_field_offset += 1;
         }
@@ -359,42 +463,78 @@ fn build_fields_array(
     // Build arrays from collected data
     let ids_array = FixedSizeBinaryArray::try_from_iter(ids.iter())?;
     let silo_id_array = StringArray::from(silo_ids);
-    let name_array = StringArray::from(names);
     let table_name_array = StringArray::from(table_names);
+    let name_array = StringArray::from(names);
     let canonical_type_array = StringArray::from(canonical_types);
 
+    // Type confidence
+    let type_confidence_array = Float32Array::from(type_confidences);
+
     // CardinalityArray
-    let cardinality_nulls_buffer = NullBuffer::from(cardinality_nulls);
-    let cardinality_array = Float32Array::new(
-        ScalarBuffer::from(cardinalities),
-        Some(cardinality_nulls_buffer),
+    let cardinality_array = Float32Array::from(cardinalities);
+
+    // Avg byte length
+    let avg_byte_len_array = Float32Array::from(avg_byte_lengths);
+
+    // Monotonicity
+    let is_monotonic_array = BooleanArray::from(is_monotonics);
+
+    // Char class signature
+    let char_class_array = ListArray::new(
+        Arc::new(Field::new("item", DataType::Float32, false)),
+        OffsetBuffer::new(ScalarBuffer::from(char_class_offsets)),
+        Arc::new(Float32Array::from(char_class_values)),
+        Some(NullBuffer::from(char_class_nulls)),
     );
 
-    // Embedding Arrays
-    let embedding_values_array = Float32Array::from(embeding_values);
-    let embedding_nulls_buffer = NullBuffer::from(embedding_nulls);
-    let embedding_list = GenericListArray::<i64>::try_new(
-        Arc::new(Field::new("item", DataType::Float32, false)),
-        OffsetBuffer::new(ScalarBuffer::from(embedding_offsets)),
-        Arc::new(embedding_values_array),
-        Some(embedding_nulls_buffer),
-    )?;
+    // column default
+    let column_default_array = StringArray::from(column_defaults);
+
+    // Nullability
+    let is_nullable_array = BooleanArray::from(is_nullables);
+
+    // Char max length
+    let char_max_length_array = Int32Array::from(char_max_lengths);
+
+    // Numeric precision
+    let numeric_precision_array = Int32Array::from(numeric_precisions);
+
+    // Numeric scale
+    let numeric_scale_array = Int32Array::from(numeric_scales);
+
+    // Datetime precision
+    let datetime_precision_array = Int32Array::from(datetime_precisions);
+
+    // Embedding Array
+    let embed_value_data = Float32Array::from(embedding_values);
+    let field = Arc::new(Field::new("item", DataType::Float32, false));
+    let embed_array = FixedSizeListArray::new(field, 384, Arc::new(embed_value_data), None);
 
     let struct_array = StructArray::try_new(
         get_field_defs().into(),
         vec![
             Arc::new(ids_array),
             Arc::new(silo_id_array),
-            Arc::new(name_array),
             Arc::new(table_name_array),
+            Arc::new(name_array),
             Arc::new(canonical_type_array),
+            Arc::new(type_confidence_array),
             Arc::new(cardinality_array),
-            Arc::new(embedding_list),
+            Arc::new(avg_byte_len_array),
+            Arc::new(is_monotonic_array),
+            Arc::new(char_class_array),
+            Arc::new(column_default_array),
+            Arc::new(is_nullable_array),
+            Arc::new(char_max_length_array),
+            Arc::new(numeric_precision_array),
+            Arc::new(numeric_scale_array),
+            Arc::new(datetime_precision_array),
+            Arc::new(embed_array),
         ],
         None,
     )?;
 
-    let fields_list = GenericListArray::<i64>::try_new(
+    let fields_list = ListArray::try_new(
         Arc::new(Field::new(
             "item",
             DataType::Struct(get_field_defs().into()),
@@ -413,7 +553,7 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, Nisab
     let mut field_defs = Vec::with_capacity(num_fields);
 
     // Extract all columns
-    let id_col = struct_array
+    let id_array = struct_array
         .column(0)
         .as_any()
         .downcast_ref::<FixedSizeBinaryArray>()
@@ -421,60 +561,67 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, Nisab
             "Failed to downcast id (Uuid) column".into(),
         ))?;
 
-    let silo_id_col = struct_array.column(1).as_string::<i64>();
-    let name_col = struct_array.column(2).as_string::<i64>();
-    let table_name_col = struct_array.column(3).as_string::<i64>();
-    let canonical_type_col = struct_array.column(4).as_string::<i64>();
+    let silo_id_array = struct_array.column(1).as_string::<i32>();
 
-    let type_confidence_col = struct_array.column(5).as_primitive::<Float32Type>();
-    let cardinality_col = struct_array.column(6).as_primitive::<Float32Type>();
+    let table_name_array = struct_array.column(2).as_string::<i32>();
 
-    let avg_byte_len_col = struct_array.column(7).as_primitive::<Float32Type>();
-    let is_monotonic_col = struct_array.column(8).as_boolean();
+    let name_array = struct_array.column(3).as_string::<i32>();
 
-    let char_class_signature_col = struct_array.column(9).as_fixed_size_list();
-    let column_default_col = struct_array.column(10).as_string::<i64>();
-    let is_nullable_col = struct_array.column(11).as_boolean();
+    let canonical_type_array = struct_array.column(4).as_string::<i32>();
 
-    let char_max_len_col = struct_array.column(12).as_primitive::<Int32Type>();
+    let type_confidence_array = struct_array.column(5).as_primitive::<Float32Type>();
 
-    let numeric_precision_col = struct_array.column(13).as_primitive::<Int32Type>();
+    let cardinality_array = struct_array.column(6).as_primitive::<Float32Type>();
 
-    let numeric_scale_col = struct_array.column(14).as_primitive::<Int32Type>();
+    let avg_byte_len_array = struct_array.column(7).as_primitive::<Float32Type>();
 
-    let datetime_precision_col = struct_array.column(15).as_primitive::<Int32Type>();
+    let is_monotonic_array = struct_array.column(8).as_boolean();
+
+    let char_class_signature_array = struct_array.column(9).as_list::<i32>();
+
+    let column_default_array = struct_array.column(10).as_string::<i32>();
+
+    let is_nullable_array = struct_array.column(11).as_boolean();
+
+    let char_max_len_array = struct_array.column(12).as_primitive::<Int32Type>();
+
+    let numeric_precision_array = struct_array.column(13).as_primitive::<Int32Type>();
+
+    let numeric_scale_array = struct_array.column(14).as_primitive::<Int32Type>();
+
+    let datetime_precision_array = struct_array.column(15).as_primitive::<Int32Type>();
 
     for i in 0..num_fields {
-        let id = Uuid::from_slice(id_col.value(i))?;
-        let silo_id = silo_id_col.value(i).to_string();
-        let table_name = table_name_col.value(i).to_string();
-        let name = name_col.value(i).to_string();
-        let canonical_type: DataType = canonical_type_col.value(i).parse()?;
+        let id = Uuid::from_slice(id_array.value(i))?;
+        let silo_id = silo_id_array.value(i).to_string();
+        let table_name = table_name_array.value(i).to_string();
+        let name = name_array.value(i).to_string();
+        let canonical_type: DataType = canonical_type_array.value(i).parse()?;
 
-        let type_confidence = if type_confidence_col.is_null(i) {
+        let type_confidence = if type_confidence_array.is_null(i) {
             None
         } else {
-            Some(type_confidence_col.value(i))
+            Some(type_confidence_array.value(i))
         };
 
-        let cardinality = if cardinality_col.is_null(i) {
+        let cardinality = if cardinality_array.is_null(i) {
             None
         } else {
-            Some(cardinality_col.value(i))
+            Some(cardinality_array.value(i))
         };
 
-        let avg_byte_length = if avg_byte_len_col.is_null(i) {
+        let avg_byte_length = if avg_byte_len_array.is_null(i) {
             None
         } else {
-            Some(avg_byte_len_col.value(i))
+            Some(avg_byte_len_array.value(i))
         };
 
-        let is_monotonic = is_monotonic_col.value(i);
+        let is_monotonic = is_monotonic_array.value(i);
 
-        let char_class_signature = if char_class_signature_col.is_null(i) {
+        let char_class_signature = if char_class_signature_array.is_null(i) {
             None
         } else {
-            let values = char_class_signature_col.value(i);
+            let values = char_class_signature_array.value(i);
             let values = values.as_primitive::<Float32Type>();
 
             Some([
@@ -485,36 +632,36 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, Nisab
             ])
         };
 
-        let column_default = if column_default_col.is_null(i) {
+        let column_default = if column_default_array.is_null(i) {
             None
         } else {
-            Some(column_default_col.value(i).to_owned())
+            Some(column_default_array.value(i).to_owned())
         };
 
-        let is_nullable = is_nullable_col.value(i);
+        let is_nullable = is_nullable_array.value(i);
 
-        let char_max_length = if char_max_len_col.is_null(i) {
+        let char_max_length = if char_max_len_array.is_null(i) {
             None
         } else {
-            Some(char_max_len_col.value(i))
+            Some(char_max_len_array.value(i))
         };
 
-        let numeric_precision = if numeric_precision_col.is_null(i) {
+        let numeric_precision = if numeric_precision_array.is_null(i) {
             None
         } else {
-            Some(numeric_precision_col.value(i))
+            Some(numeric_precision_array.value(i))
         };
 
-        let numeric_scale = if numeric_scale_col.is_null(i) {
+        let numeric_scale = if numeric_scale_array.is_null(i) {
             None
         } else {
-            Some(numeric_scale_col.value(i))
+            Some(numeric_scale_array.value(i))
         };
 
-        let datetime_precision = if datetime_precision_col.is_null(i) {
+        let datetime_precision = if datetime_precision_array.is_null(i) {
             None
         } else {
-            Some(datetime_precision_col.value(i))
+            Some(datetime_precision_array.value(i))
         };
 
         field_defs.push(FieldDef {
@@ -566,7 +713,7 @@ pub struct TableStats {
 
 impl TableStats {
     fn embedding(&self) -> DVector<f32> {
-        let raw_embed = Vector1::from_vec(vec![
+        let raw_embed: SVector<f32, 19> = SVector::from_vec(vec![
             self.num_array,
             self.num_decimal128,
             self.num_int32,
@@ -591,7 +738,7 @@ impl TableStats {
         let raw_embed = raw_embed / self.num_fields;
 
         // Dimensionality expansion
-        deterministic_projection(raw_embed, 384, 42)
+        deterministic_projection::<19>(raw_embed, 384, 42)
     }
 }
 
