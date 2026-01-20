@@ -10,12 +10,6 @@ pub enum NisabaError {
     #[error("Missing: {0}")]
     Missing(String),
 
-    // Graph
-    #[error("Graph construction: {0}")]
-    GraphConstruction(String),
-    #[error("Invalid parameter: {0}")]
-    InvalidParameter(String),
-
     // External errors
     #[error(transparent)]
     Arrow(#[from] arrow::error::ArrowError),
@@ -41,6 +35,8 @@ pub enum NisabaError {
     Xlsx(#[from] calamine::XlsxError),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
-    #[error("{0}")]
+    #[error(transparent)]
     Utf8(#[from] std::string::FromUtf8Error),
+    #[error("error: {0}")]
+    Graph(graphrs::Error),
 }
