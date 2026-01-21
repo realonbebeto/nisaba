@@ -80,7 +80,6 @@ impl SchemaAnalyzer {
             cluster_id,
             tables: tr,
             field_clusters: Vec::new(),
-            explanations: Vec::new(),
         })?;
         // Successful clustering
         if clusters.len() < tbl_defs.len() {
@@ -150,7 +149,6 @@ impl SchemaAnalyzer {
             let clusters = clusterer.clusters(&field_defs, |cluster_id, fr| FieldCluster {
                 cluster_id,
                 fields: fr,
-                explanations: Vec::new(),
             })?;
 
             tbl_cluster.field_clusters = clusters;
