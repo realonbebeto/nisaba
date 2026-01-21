@@ -30,6 +30,7 @@ use crate::{
 pub struct FieldDef {
     pub id: Uuid,
     pub silo_id: String,
+    pub table_schema: String,
     pub table_name: String,
     pub name: String,
     pub canonical_type: DataType,
@@ -391,6 +392,7 @@ impl Storable for FieldDef {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::FixedSizeBinary(16), false),
             Field::new("silo_id", DataType::Utf8, false),
+            Field::new("table_schema", DataType::Utf8, false),
             Field::new("table_name", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
             Field::new("canonical_type", DataType::Utf8, false),
@@ -421,6 +423,7 @@ impl Storable for FieldDef {
         vec![
             "id".to_string(),
             "silo_id".to_string(),
+            "table_schema".to_string(),
             "table_name".to_string(),
             "name".to_string(),
             "canonical_type".to_string(),
@@ -471,6 +474,13 @@ impl Storable for FieldDef {
             items
                 .iter()
                 .map(|f| f.silo_id.clone())
+                .collect::<Vec<String>>(),
+        );
+
+        let table_schemas = StringArray::from(
+            items
+                .iter()
+                .map(|f| f.table_schema.clone())
                 .collect::<Vec<String>>(),
         );
 
@@ -608,6 +618,7 @@ impl Storable for FieldDef {
             vec![
                 Arc::new(ids),
                 Arc::new(silo_ids),
+                Arc::new(table_schemas),
                 Arc::new(table_names),
                 Arc::new(names),
                 Arc::new(canonical_types),
@@ -654,8 +665,17 @@ impl Storable for FieldDef {
                 ))?;
 
             // Get table name values
-            let table_name_array = batch
+            let table_schema_array = batch
                 .column(2)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or(ArrowError::CastError(
+                    "Failed to downcast table_name column".into(),
+                ))?;
+
+            // Get table name values
+            let table_name_array = batch
+                .column(3)
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .ok_or(ArrowError::CastError(
@@ -664,7 +684,7 @@ impl Storable for FieldDef {
 
             // Get name values
             let name_array = batch
-                .column(3)
+                .column(4)
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .ok_or(ArrowError::CastError(
@@ -673,7 +693,7 @@ impl Storable for FieldDef {
 
             // Get canonical_type values
             let canonical_type_array = batch
-                .column(4)
+                .column(5)
                 .as_any()
                 .downcast_ref::<StringArray>()
                 .ok_or(ArrowError::CastError(
@@ -682,7 +702,7 @@ impl Storable for FieldDef {
 
             //Type confidence
             let type_confidence_array = batch
-                .column(5)
+                .column(6)
                 .as_any()
                 .downcast_ref::<Float32Array>()
                 .ok_or(ArrowError::CastError(
@@ -690,15 +710,15 @@ impl Storable for FieldDef {
                 ))?;
 
             // Cardinality
-            let cardinality_array = batch.column(6).as_primitive::<Float32Type>();
+            let cardinality_array = batch.column(7).as_primitive::<Float32Type>();
 
             // Avg Byte Len
-            let avg_byte_len_array = batch.column(7).as_primitive::<Float32Type>();
+            let avg_byte_len_array = batch.column(8).as_primitive::<Float32Type>();
 
             // Monotonicity
             let monotonicity_array =
                 batch
-                    .column(8)
+                    .column(9)
                     .as_boolean_opt()
                     .ok_or(ArrowError::CastError(
                         "Failed to downcast monotonicity".into(),
@@ -707,37 +727,37 @@ impl Storable for FieldDef {
             // Class signature
             let class_signature_array =
                 batch
-                    .column(9)
+                    .column(10)
                     .as_list_opt::<i32>()
                     .ok_or(ArrowError::CastError(
                         "Failed to downcast class signature".into(),
                     ))?;
 
             // Column Default
-            let column_default_array = batch.column(10).as_string::<i32>();
+            let column_default_array = batch.column(11).as_string::<i32>();
 
             // Nullable
             let nullable_array = batch
-                .column(11)
+                .column(12)
                 .as_boolean_opt()
                 .ok_or(ArrowError::CastError(
                     "Failed to downcast is nullable column".into(),
                 ))?;
 
             // Char Max Length
-            let char_max_len_array = batch.column(12).as_primitive::<Int32Type>();
+            let char_max_len_array = batch.column(13).as_primitive::<Int32Type>();
 
             // Numeric precision
-            let numeric_precision_array = batch.column(13).as_primitive::<Int32Type>();
+            let numeric_precision_array = batch.column(14).as_primitive::<Int32Type>();
 
             // Numeric scale
-            let numeric_scale_array = batch.column(14).as_primitive::<Int32Type>();
+            let numeric_scale_array = batch.column(15).as_primitive::<Int32Type>();
 
             // Datetime precision
-            let datetime_precision_array = batch.column(15).as_primitive::<Int32Type>();
+            let datetime_precision_array = batch.column(16).as_primitive::<Int32Type>();
 
             let distances = batch
-                .column(16)
+                .column(17)
                 .as_any()
                 .downcast_ref::<Float32Array>()
                 .ok_or(ArrowError::CastError(
@@ -747,6 +767,8 @@ impl Storable for FieldDef {
             for row_idx in 0..batch.num_rows() {
                 let id = Uuid::from_slice(ids_array.value(row_idx))?;
                 let silo_id = silo_id_array.value(row_idx).to_string();
+
+                let table_schema = table_schema_array.value(row_idx).to_string();
 
                 let table_name = table_name_array.value(row_idx).to_string();
 
@@ -825,6 +847,7 @@ impl Storable for FieldDef {
                 let schema = FieldDef {
                     id,
                     silo_id,
+                    table_schema,
                     table_name,
                     name,
                     canonical_type,

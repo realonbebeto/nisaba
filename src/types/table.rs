@@ -563,37 +563,40 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, Nisab
 
     let silo_id_array = struct_array.column(1).as_string::<i32>();
 
-    let table_name_array = struct_array.column(2).as_string::<i32>();
+    let table_schema_array = struct_array.column(2).as_string::<i32>();
 
-    let name_array = struct_array.column(3).as_string::<i32>();
+    let table_name_array = struct_array.column(3).as_string::<i32>();
 
-    let canonical_type_array = struct_array.column(4).as_string::<i32>();
+    let name_array = struct_array.column(4).as_string::<i32>();
 
-    let type_confidence_array = struct_array.column(5).as_primitive::<Float32Type>();
+    let canonical_type_array = struct_array.column(5).as_string::<i32>();
 
-    let cardinality_array = struct_array.column(6).as_primitive::<Float32Type>();
+    let type_confidence_array = struct_array.column(6).as_primitive::<Float32Type>();
 
-    let avg_byte_len_array = struct_array.column(7).as_primitive::<Float32Type>();
+    let cardinality_array = struct_array.column(7).as_primitive::<Float32Type>();
 
-    let is_monotonic_array = struct_array.column(8).as_boolean();
+    let avg_byte_len_array = struct_array.column(8).as_primitive::<Float32Type>();
 
-    let char_class_signature_array = struct_array.column(9).as_list::<i32>();
+    let is_monotonic_array = struct_array.column(9).as_boolean();
 
-    let column_default_array = struct_array.column(10).as_string::<i32>();
+    let char_class_signature_array = struct_array.column(10).as_list::<i32>();
 
-    let is_nullable_array = struct_array.column(11).as_boolean();
+    let column_default_array = struct_array.column(11).as_string::<i32>();
 
-    let char_max_len_array = struct_array.column(12).as_primitive::<Int32Type>();
+    let is_nullable_array = struct_array.column(12).as_boolean();
 
-    let numeric_precision_array = struct_array.column(13).as_primitive::<Int32Type>();
+    let char_max_len_array = struct_array.column(13).as_primitive::<Int32Type>();
 
-    let numeric_scale_array = struct_array.column(14).as_primitive::<Int32Type>();
+    let numeric_precision_array = struct_array.column(14).as_primitive::<Int32Type>();
 
-    let datetime_precision_array = struct_array.column(15).as_primitive::<Int32Type>();
+    let numeric_scale_array = struct_array.column(15).as_primitive::<Int32Type>();
+
+    let datetime_precision_array = struct_array.column(16).as_primitive::<Int32Type>();
 
     for i in 0..num_fields {
         let id = Uuid::from_slice(id_array.value(i))?;
         let silo_id = silo_id_array.value(i).to_string();
+        let table_schema = table_schema_array.value(i).to_string();
         let table_name = table_name_array.value(i).to_string();
         let name = name_array.value(i).to_string();
         let canonical_type: DataType = canonical_type_array.value(i).parse()?;
@@ -667,8 +670,9 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, Nisab
         field_defs.push(FieldDef {
             id,
             silo_id,
-            name,
             table_name,
+            name,
+            table_schema,
             canonical_type,
             type_confidence,
             cardinality,

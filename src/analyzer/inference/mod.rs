@@ -194,6 +194,7 @@ pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef
                 id: Uuid::now_v7(),
                 silo_id: v.silo_id,
                 name: v.column_name,
+                table_schema: v.table_schema,
                 table_name: v.table_name,
                 canonical_type: sql_to_arrow_type(
                     &v.udt_name,
