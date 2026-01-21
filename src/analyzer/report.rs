@@ -17,14 +17,12 @@ pub struct TableCluster {
     pub cluster_id: u32,
     pub tables: Vec<TableResult>,
     pub field_clusters: Vec<FieldCluster>,
-    pub explanations: Vec<MatchExplanation>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FieldCluster {
     pub cluster_id: u32,
     pub fields: Vec<FieldResult>,
-    pub explanations: Vec<MatchExplanation>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +63,7 @@ impl ClusterItem for FieldResult {
     }
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct MatchExplanation {
     pub source: Uuid,
