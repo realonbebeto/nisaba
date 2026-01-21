@@ -283,7 +283,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_csv_probing() {
+    async fn test_two_silo_probing() {
         // analyzer
         let analyzer = SchemaAnalyzerBuilder::default().build();
 
