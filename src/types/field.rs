@@ -8,7 +8,11 @@ use arrow::{
     error::ArrowError,
 };
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use std::{str::FromStr, sync::Arc};
+use std::{
+    fmt::{self, Write},
+    str::FromStr,
+    sync::Arc,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -46,12 +50,57 @@ impl std::fmt::Display for FieldDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "table name: {} field name: {} data type: {}, cardinality: {}",
+            "FieldDef: \n- id: {} \n- silo id: {} \n- table name: {} \n- field name: {} \n- data type: {} \n- is monotonic: {} \n- is nullable: {}",
+            self.id,
+            self.silo_id,
             self.table_name,
             self.name,
             self.canonical_type,
-            self.cardinality.unwrap_or_default()
-        )
+            self.is_monotonic,
+            self.is_nullable
+        )?;
+
+        if let Some(tc) = self.type_confidence {
+            write!(f, "\n- type confidence: {}", tc)?;
+        }
+
+        if let Some(c) = self.cardinality {
+            write!(f, "\n- cardinality: {}", c)?;
+        }
+
+        if let Some(avg) = self.avg_byte_length {
+            write!(f, "\n- avg byte length: {}", avg)?;
+        }
+
+        if let Some(tc) = self.type_confidence {
+            write!(f, "\n- type confidence: {}", tc)?;
+        }
+
+        if let Some(sig) = self.char_class_signature {
+            write!(f, "\n- char class signature: {:?}", sig)?;
+        }
+
+        if let Some(default) = &self.column_default {
+            write!(f, "\n- column default: {}", default)?;
+        }
+
+        if let Some(max) = self.char_max_length {
+            write!(f, "\n- char max length: {}", max)?;
+        }
+
+        if let Some(np) = self.numeric_precision {
+            write!(f, "\n- numeric precision: {}", np)?;
+        }
+
+        if let Some(ns) = self.numeric_scale {
+            write!(f, "\n- numeric scale: {}", ns)?;
+        }
+
+        if let Some(dp) = self.datetime_precision {
+            write!(f, "\n- datetime precision: {}", dp)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -63,6 +112,241 @@ impl FieldDef {
             self.cardinality = Some(m.cardinality);
             self.avg_byte_length = m.avg_byte_length;
         }
+    }
+
+    pub fn write_field_def_paragraph(&self, out: &mut String) {
+        let base = 256;
+        let extra = self.column_default.as_ref().map_or(0, |s| s.len() + 40)
+            + self.avg_byte_length.map_or(0, |_| 70)
+            + self.char_max_length.map_or(0, |_| 70)
+            + self.numeric_precision.map_or(0, |_| 60)
+            + self.numeric_scale.map_or(0, |_| 60)
+            + self.datetime_precision.map_or(0, |_| 70);
+
+        out.reserve(base + extra);
+
+        // Identity + context
+        // Thoughts are that identity is irrelevant considering names and tables could have little to no significance e.g table1, table2
+
+        // Canonical type
+        self.write_type_sentence(out);
+
+        // Cardinality
+        self.write_cardinality(out);
+
+        // Monotonicity
+        if self.is_monotonic {
+            out.push_str(
+                "Values in the field increase monotonically when sorted, suggesting a sequence.",
+            );
+        }
+
+        // Nullability
+        if self.is_nullable {
+            out.push_str("The field may contain null values.");
+        } else {
+            out.push_str("The field does not allow null values");
+        }
+
+        // Default value
+        if let Some(default) = &self.column_default {
+            self.write_str(
+                out,
+                format_args!("The field has a default value defined as \"{}\".", default),
+            );
+        }
+
+        // Size
+        if let Some(avg) = self.avg_byte_length {
+            self.write_str(
+                out,
+                format_args!(
+                    "Typical values have an average size of approximately {:2} bytes",
+                    avg
+                ),
+            );
+        }
+
+        // Max size
+        if let Some(max) = self.char_max_length {
+            self.write_str(
+                out,
+                format_args!(
+                    "Values are constrained to a maximum length of {} characters.",
+                    max
+                ),
+            );
+        }
+
+        // Numeric precision
+        if let Some(np) = self.numeric_precision {
+            self.write_str(
+                out,
+                format_args!(
+                    "Numeric values are stored with a precision of {} digits",
+                    np
+                ),
+            );
+        }
+
+        // Numeric scale
+        if let Some(ns) = self.numeric_scale {
+            self.write_str(
+                out,
+                format_args!("Numeric values use a scale of {} decimal places", ns),
+            );
+        }
+
+        // Datetime precision
+        if let Some(dp) = self.datetime_precision {
+            self.write_str(
+                out,
+                format_args!(
+                    "Datetime values are stored with a precision of {} digits",
+                    dp
+                ),
+            );
+        }
+
+        // Char class
+        self.write_char_class(out);
+    }
+
+    fn write_type_sentence(&self, out: &mut String) {
+        let hedge = match self.type_confidence {
+            Some(c) if c > 0.91 => "It is ",
+            Some(c) if c > 0.71 => "It is very likely ",
+            Some(c) if c > 0.49 => "It appears to be ",
+            _ => "It may represent ",
+        };
+
+        out.push_str(hedge);
+
+        match self.canonical_type {
+            DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64 => self.write_str(
+                out,
+                format_args!(
+                    "an integer-valued field of \"{}\" variant.",
+                    self.canonical_type
+                ),
+            ),
+            DataType::Float16 | DataType::Float32 | DataType::Float64 => self.write_str(
+                out,
+                format_args!(
+                    "a continuous numeric measurement of \"{}\" variant.",
+                    self.canonical_type
+                ),
+            ),
+
+            DataType::Date32 | DataType::Date64 => self.write_str(
+                out,
+                format_args!(
+                    "a calendar date field of \"{}\" variant.",
+                    self.canonical_type
+                ),
+            ),
+
+            DataType::Time32(p) | DataType::Time64(p) => self.write_str(
+                out,
+                format_args!(
+                    "a time-of-day field of \"{}\" variant and \"{:?}\" resolution.",
+                    self.canonical_type, p
+                ),
+            ),
+
+            DataType::Boolean => out.push_str("a boolean field."),
+
+            DataType::Null => out.push_str("a null field."),
+
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                out.push_str("a binary field.")
+            }
+
+            DataType::FixedSizeBinary(16) => out.push_str("a uuid fied."),
+
+            DataType::FixedSizeBinary(s) => {
+                self.write_str(out, format_args!("a \"{}\" fixed size binary field.", s))
+            }
+
+            DataType::FixedSizeList(_, p) => {
+                self.write_str(out, format_args!("a \"{}\" fixed size list field", p))
+            }
+
+            DataType::Timestamp(p, _) => self.write_str(
+                out,
+                format_args!(
+                    "a timestamp field of \"{:?}\" resolution representing a moment in time.",
+                    p
+                ),
+            ),
+
+            DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::ListView(_)
+            | DataType::LargeListView(_) => out.push_str("a list field"),
+
+            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8 => self.write_str(
+                out,
+                format_args!(
+                    "a textual string field of \"{:?}\" variant",
+                    self.canonical_type
+                ),
+            ),
+
+            _ => self.write_str(
+                out,
+                format_args!(
+                    "a structured or complex field of \"{}\" variant",
+                    self.canonical_type
+                ),
+            ),
+        }
+    }
+
+    fn write_cardinality(&self, out: &mut String) {
+        if let Some(cardinality) = self.cardinality {
+            if cardinality > 0.95 {
+                out.push_str("Values in the field are highly unique");
+            } else if cardinality < 0.1 {
+                out.push_str("Values in the field repeat frequently, exhibiting low-cardinality.");
+            } else {
+                out.push_str("Values in the field exhibit moderate diversity");
+            }
+        }
+    }
+
+    fn write_char_class(&self, out: &mut String) {
+        const DIGIT: usize = 0;
+        const ALPHA: usize = 1;
+        const SYMBOL: usize = 3;
+
+        if let Some(sig) = self.char_class_signature {
+            let msg = match () {
+                _ if sig[DIGIT] > 0.8 && sig[ALPHA] < 0.1 => {
+                    "Values consist primarily of digits, suggesting numeric identifiers or codes. "
+                }
+                _ if sig[ALPHA] > 0.7 => {
+                    "Values are predominantly alphabetic, indicating descriptive text. "
+                }
+                _ if sig[SYMBOL] > 0.3 => {
+                    "Values contain a significant number if symbols, suggesting encoded or formatted strings."
+                }
+                _ => "Values exhibit a mixed character composition. ",
+            };
+
+            out.push_str(msg);
+        }
+    }
+
+    fn write_str(&self, out: &mut String, args: fmt::Arguments<'_>) {
+        out.write_fmt(args).unwrap()
     }
 }
 
@@ -163,8 +447,11 @@ impl Storable for FieldDef {
         let mut model =
             TextEmbedding::try_new(InitOptions::new(EmbeddingModel::MultilingualE5Small))?;
 
+        let mut value = String::new();
+        self.write_field_def_paragraph(&mut value);
+
         // TODO Sample Embedding is part of field on embed
-        let embeddings = &model.embed([self.value()], None)?[0];
+        let embeddings = &model.embed([value], None)?[0];
         let embeddings = embeddings.to_owned();
 
         Ok(embeddings)
@@ -559,11 +846,5 @@ impl Storable for FieldDef {
         }
 
         Ok(schemas)
-    }
-}
-
-impl FieldDef {
-    fn value(&self) -> String {
-        format!("{}", self)
     }
 }
