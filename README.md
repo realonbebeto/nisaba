@@ -6,27 +6,12 @@ This library brings a disciplined structure to data reconciliation, providing de
 
 In Mesopotamian/Sumeria mythology, [Nisaba](https://en.wikipedia.org/wiki/Nisaba) is the goddess of writing, accounting, and the orderly keeping of records, entrusted with maintaining clarity across ledgers and knowledge archives.
 
+## Getting started
+Prefer using the example and [the generated docs](https://docs.rs/nisaba)
+
+
 ## Roadmap
-
-### v0.7 - Validation and Reconciliation Intelligence
-
-- [ ] Schema evolution utilities
-- [ ] Data Profiling Helpers
-- [ ] AI Reports/Recommendations
-
-### v0.6 - Extensibility + Quality
-
-- [ ] Data Quality Checks
-- [ ] Configurable Merge Rules
-- [ ] File/struct adapters: CSV, Parquet
-- [ ] Conflict Detection + Diff Output
-
-### v0.5 - Foundation
-
-- [x] Deterministic Reconciliation Engines
-- [x] Structured Reconciliation Reports
-- [x] SQL/NoSQL/File Support (MySQL, PostgreSQL, SQLite/MongoDB/CSV, Excel, Parquet)
-- [x] CI/CD
+See the [roadmap](./docs/ROADMAP.md) for future plans
 
 ## Versioning
 
