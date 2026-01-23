@@ -57,16 +57,16 @@ impl StorageBackend {
 #[derive(Clone, Debug)]
 /// The `StorageConfig` sets out connection details to a store
 pub struct StorageConfig {
-    pub backend: StorageBackend,
-    pub dir_path: Option<String>,
-    pub host: Option<String>,
-    pub port: Option<u16>,
-    pub username: Option<String>,
-    pub password: Option<String>,
-    pub database: Option<String>,
-    pub namespace: Option<String>,
+    pub(crate) backend: StorageBackend,
+    pub(crate) dir_path: Option<String>,
+    pub(crate) host: Option<String>,
+    pub(crate) port: Option<u16>,
+    pub(crate) username: Option<String>,
+    pub(crate) password: Option<String>,
+    pub(crate) database: Option<String>,
+    pub(crate) namespace: Option<String>,
     // For MongoDB SRV connection strings
-    pub use_srv: bool,
+    pub(crate) use_srv: bool,
 }
 
 impl StorageConfig {
