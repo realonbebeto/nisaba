@@ -10,6 +10,7 @@ pub use analyzer::{
     catalog::{StorageBackend, StorageConfig},
     inference::{
         FileInferenceEngine, InferenceEngineRegistry, NoSQLInferenceEngine, SQLInferenceEngine,
+        SchemaInferenceEngine,
     },
     retriever::LatentStore,
 };
