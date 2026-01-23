@@ -19,6 +19,18 @@ use crate::{
     types::MatchCandidate,
 };
 
+/// The `deterministic_projection` function performs linear projection of a Matrix from one size to another
+///
+/// Arguments:
+///
+/// * `input`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `d_out`: The `d_out` parameter is of type `usize`, givign how big the resultant vector should be.
+/// * `seed`: The `index` parameter is of type `u64`, to set the random number generator deterministic and reproducible.
+///
+/// Returns:
+///
+/// The `deterministic_projection` function returns a DVector of d_out size.
 pub fn deterministic_projection<const C: usize>(
     input: SVector<f32, C>,
     d_out: usize,
@@ -46,6 +58,8 @@ pub struct GraphClusterer {
 }
 
 impl GraphClusterer {
+    /// The `new` function creates an instance of GraphClusterer with desired settings
+    /// for purposes of clustering.
     pub fn new() -> Self {
         let graph = Graph::new(GraphSpecs {
             directed: false,
@@ -59,6 +73,18 @@ impl GraphClusterer {
         Self { graph }
     }
 
+    /// The `add_ann_edges` function adds weighted undirected edges to the graph on the mutable self. The cosine distance from the latent store
+    /// is adjusted to cosine similarity for purposes of comparison.
+    ///
+    /// Arguments:
+    ///
+    /// * `config`: The `config` parameter is a shared AnalyzerConfig which provides the similarity threshold.
+    /// * `source`: The `source` parameter is of type implementing `Storable`, giving the source node details.
+    /// * `candidates`: The `candidates` parameter is a slice of types implementing `MatchCandidate` trait, giving the destinatination node details.
+    ///
+    /// Returns:
+    ///
+    /// The `add_ann_edges` function returns a Result of unit value when successful and NisabaError on error.
     pub fn add_ann_edges<T, C>(
         &mut self,
         config: Arc<AnalyzerConfig>,
@@ -98,6 +124,19 @@ impl GraphClusterer {
         Ok(())
     }
 
+    /// The `clusters` function runs the leiden community algorithm on the graph to give HashSet
+    /// clusters of ids and map the ids to TableDefs/FieldDefs.
+    ///
+    /// Arguments:
+    ///
+    /// * `defs`: The `defs` parameter is of type implementing ClusterDef where the Id is Uuid.
+    /// * `build_cluster`: The `build_cluster` parameter is of type implementing `Fn`, a function
+    ///   that runs to group FieldDefs/TableDefs.
+    ///
+    /// Returns:
+    ///
+    /// The `clusters` function returns a Result of Vec of C determined by build_cluster function
+    /// when successful and NisabaError on error.
     pub fn clusters<D, R, C>(
         &self,
         defs: &[D],

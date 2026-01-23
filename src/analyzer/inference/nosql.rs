@@ -33,6 +33,12 @@ use crate::{
 
 /// NoSQL inference engine for MongoDB
 #[derive(Debug)]
+/// The NoSQLInferenceEngine struct has a field sample_size of type u32.
+///
+/// Properties:
+///
+/// * `sample_size`: The `sample_size` property in `NoSQLInferenceEngine` represents the size
+///   of the sample data that will be used by the inference engine for analysis.
 pub struct NoSQLInferenceEngine {
     sample_size: u32,
 }
@@ -48,11 +54,37 @@ impl NoSQLInferenceEngine {
         NoSQLInferenceEngine::default()
     }
 
+    /// The `with_sample_size` function sets the sample size for a data structure and returns
+    /// the modified structure.
+    ///
+    /// Arguments:
+    ///
+    /// * `size`: The `size` parameter in the `with_sample_size` function represents the sample size
+    ///   that you want to set for the object. This parameter allows you to specify the size of the samples
+    ///   that will be used in inference.
+    ///
+    /// Returns:
+    ///
+    /// The `self` object is being returned after updating the `sample_size` field with the provided
+    /// `size` value.
     pub fn with_sample_size(mut self, size: u32) -> Self {
         self.sample_size = size;
         self
     }
 
+    /// The function `infer_from_mongodb` asynchronously infers table definitions from MongoDB
+    /// collections based on the provided configuration.
+    ///
+    /// Arguments:
+    ///
+    /// * `config`: The `config` parameter in the `infer_from_mongodb` function is of type
+    ///   `&StorageConfig`, which contains information about the storage configuration such as the backend
+    ///   type, connection string, and database name.
+    ///
+    /// Returns:
+    ///
+    /// The function `infer_from_mongodb` returns a `Result` containing a vector of `TableDef` structs
+    /// or a `NisabaError`.
     async fn infer_from_mongodb(
         &self,
         config: &StorageConfig,
@@ -160,6 +192,25 @@ impl NoSQLInferenceEngine {
         table_defs
     }
 
+    /// The `mongo_collection_infer` function infers field types from MongoDB documents and
+    /// returns source fields and a schema.
+    ///
+    /// Arguments:
+    ///
+    /// * `db_name`: The `db_name` parameter refers to the name of the database where the collection
+    ///   is located in MongoDB.
+    ///
+    /// * `collection_name`: The `collection_name` parameter refers to the name of the MongoDB collection
+    ///   for which schema inference needs to be performed on.
+    ///
+    /// * `docs`: The `docs` parameter in the `mongo_cpllection_infer` function refers to the slice of MongoDB Documents.
+    ///
+    /// * `silo_id`: The `silo_id` parameter represents the identifier for the data silo where the collection is located.
+    ///
+    /// Returns:
+    ///
+    /// A tuple is being returned containing a vector of `SourceField` structs and an `Arc<Schema>`
+    /// instance.
     fn mongo_collection_infer(
         &self,
         db_name: &str,
@@ -201,6 +252,15 @@ impl NoSQLInferenceEngine {
         Ok((source_fields, schema))
     }
 
+    /// The function `mongo_document_infer` iterates through a MongoDB document to infer data types for
+    /// each field and update a HashMap with the inferred types.
+    ///
+    /// Arguments:
+    ///
+    /// * `doc`: The `doc` parameter is a reference to `Document` object, which represents a document in a MongoDB collection.
+    ///
+    /// * `field_types`: The `field_types` parameter is a mutable reference to a `HashMap` that stores
+    ///   the data types inferred for each field in a MongoDB document.
     fn mongo_document_infer(&self, doc: &Document, field_types: &mut HashMap<String, DataType>) {
         for (key, value) in doc.iter() {
             let field_name = key.trim().to_lowercase();
@@ -216,6 +276,20 @@ impl NoSQLInferenceEngine {
         }
     }
 
+    /// The function `docs_to_record_batch` converts a vector of documents into a RecordBatch based on a
+    /// given schema.
+    ///
+    /// Arguments:
+    ///
+    /// * `docs`: The `docs` parameter is a slice of `Document` instances that contain the data to be
+    ///   converted into a `RecordBatch`.
+    ///
+    /// * `schema`: The `schema` parameter represents the schema of the data that will be converted into a `RecordBatch`.
+    ///
+    /// Returns:
+    ///
+    /// The function `docs_to_record_batch` returns a `Result` containing a `RecordBatch` or a
+    /// `NisabaError`.
     fn docs_to_record_batch(
         &self,
         docs: &[Document],
@@ -322,6 +396,16 @@ impl NoSQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for NoSQLInferenceEngine {
+    /// The `infer_schema` function infers table schema from a MongoDB backend.
+    ///
+    /// Arguments:
+    ///
+    /// * `config`: The `config` parameter is of type `StorageConfig`, which contains
+    ///   configuration settings for the storage backend being used.
+    ///
+    /// Returns:
+    ///
+    /// A `Result` containing either a vector of `TableDef` or a `NisabaError` is being returned.
     fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         match config.backend {
             StorageBackend::MongoDB => block_on(self.infer_from_mongodb(config)),
@@ -332,14 +416,38 @@ impl SchemaInferenceEngine for NoSQLInferenceEngine {
         }
     }
 
+    /// The function `can_handle` checks if the provided `StorageBackend` is `MongoDB`.
+    ///
+    /// Arguments:
+    ///
+    /// * `backend`: The `backend` parameter is of type `StorageBackend`, which is an enum representing
+    ///   different types of storage backends.
+    ///
+    /// Returns:
+    ///
+    /// The function `can_handle` returns a boolean value indicating whether the provided
+    /// `StorageBackend` is equal to `StorageBackend::MongoDB`.
     fn can_handle(&self, backend: &StorageBackend) -> bool {
         matches!(backend, StorageBackend::MongoDB)
     }
+
     fn engine_name(&self) -> &str {
         "NoSQL-MongDB"
     }
 }
 
+/// The function `bson_to_arrow_type` converts BSON data types to Arrow data types.
+///
+/// Arguments:
+///
+/// * `data_type`: The function `bson_to_arrow_type` takes a reference to a `Bson` enum and converts it
+///   into an Arrow `DataType`.
+///
+/// Returns:
+///
+/// The function `bson_to_arrow_type` returns a `DataType` enum based on the input `Bson` enum. The
+/// returned `DataType` corresponds to the Arrow data type that best represents the given BSON data
+/// type.
 fn bson_to_arrow_type(data_type: &Bson) -> DataType {
     match data_type {
         Bson::Array(arr) => {
@@ -378,6 +486,20 @@ fn bson_to_arrow_type(data_type: &Bson) -> DataType {
     }
 }
 
+/// The `merge_types` function merges two data types based on specific rules and returns the
+/// resulting data type.
+///
+/// Arguments:
+///
+/// * `type_a`: `&DataType` - a reference to the first data type to be merged.
+///
+/// * `type_b`: `&DataType` - a reference to the second data type to be merged.
+///
+/// Returns:
+///
+/// The `merge_types` function returns a `DataType` value based on the input types `type_a` and
+/// `type_b`. The function matches the input types with various patterns and returns the corresponding
+/// merged data type. If none of the specific patterns match, it defaults to returning `DataType::Utf8`.
 fn merge_types(type_a: &DataType, type_b: &DataType) -> DataType {
     match (type_a, type_b) {
         (a, b) if a == b => a.clone(),

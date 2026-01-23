@@ -1,3 +1,13 @@
+//! Necessary Inference implementations for common stores
+//!
+//!
+//! Overview
+//! - [`CastSafety`]: A rule based type to ensure type promotion is within allowable constraints.
+//! - [`FileInferenceEngine`]: A type that is responsible for CSV, Excel and Parquet store inference.
+//! - [`NoSQLInferenceEngine`]: A type that is repsonsible for MongoDB store inference.
+//! - [`SQLInferenceEngine`]: A type responsible for MySQL, PostgreSQL, Sqlite store inference.
+//!
+
 use arrow::{
     array::{
         Array, AsArray, Date32Array, Date64Array, FixedSizeBinaryArray, GenericStringArray,
@@ -40,6 +50,14 @@ use crate::{
 ///
 #[allow(dead_code)]
 #[derive(Debug)]
+/// The `InferenceEngineRegistry` contains a HashMap of engine names to boxed trait
+/// objects implementing the `SchemaInferenceEngine` trait.
+///
+/// Properties:
+///
+/// * `engines`: The `engines` property in `InferenceEngineRegistry` is a HashMap that stores
+///   a mapping between strings (keys) and boxed trait objects that implement the `SchemaInferenceEngine`
+///   trait.
 pub struct InferenceEngineRegistry {
     engines: HashMap<String, Box<dyn SchemaInferenceEngine>>,
 }
@@ -116,9 +134,7 @@ impl InferenceEngineRegistry {
     /// Arguments:
     ///
     /// * `location`: The `location` parameter in the `infer_schema` function represents the location of
-    ///   the data from which you want to infer the schema. It includes information such as the type of
-    ///   store where the data is located (e.g., file system, database), the path or connection details to
-    ///   access the data,
+    ///   the data from which you want to infer the schema.
     ///
     /// Returns:
     ///
@@ -165,21 +181,48 @@ pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
 
 #[allow(dead_code)]
 #[derive(Debug)]
+/// The `SourceField` represents a field in a data source with various properties such as
+/// column name, data type, and constraints.
 pub struct SourceField {
+    /// identifier of the silo to which the field belongs
     pub silo_id: String,
+    /// schema or namespace to which the table belongs in a database.
     pub table_schema: String,
+    /// name of the table to which the field belongs
     pub table_name: String,
+    /// name of a column in a database table
     pub column_name: String,
+    /// default value of the column
     pub column_default: Option<String>,
+    /// flag if the column is nullable or not
     pub is_nullable: String,
+    /// data type of the column
     pub data_type: String,
+    /// precision of a numeric data type
     pub numeric_precision: Option<i32>,
+    /// scale of a numeric data type
     pub numeric_scale: Option<i32>,
+    /// precision of a datetime data type
     pub datetime_precision: Option<i32>,
+    /// maximum length of character of the field
     pub character_maximum_length: Option<i32>,
+    /// user-defined data type
     pub udt_name: String,
 }
 
+/// The function `convert_into_table_defs` converts a vector of source fields into table definitions and
+/// organizes them into a vector of `TableDef` structs.
+///
+/// Arguments:
+///
+/// * `schemas`: The `schemas` parameter is a vector of `SourceField` structs. Each `SourceField` struct
+///   contains information about a field in a data source, such as column name, data type, nullability,
+///   etc.
+///
+/// Returns:
+///
+/// The function `convert_into_table_defs` returns a `Result` containing either a vector of `TableDef`
+/// structs or a `NisabaError`.
 pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef>, NisabaError> {
     if schemas.is_empty() {
         return Ok(Vec::new());
@@ -238,6 +281,29 @@ pub fn convert_into_table_defs(schemas: Vec<SourceField>) -> Result<Vec<TableDef
     Ok(map)
 }
 
+/// The function `sql_to_arrow_type` converts SQL data types to Arrow data types with optional
+/// precision and scale considerations.
+///
+/// Arguments:
+///
+/// * `data_type`: The `data_type` parameter represents the SQL data type that you want to convert to an
+///   Arrow data type. It could be any valid SQL data type like `int`, `varchar`, `boolean`, etc.
+///
+/// * `numeric_precision`: The `numeric_precision` parameter represents the precision of a numeric data
+///   type in SQL. It indicates the total number of digits that can be stored, including both the digits
+///   before and after the decimal point.
+///
+/// * `numeric_scale`: The `numeric_scale` parameter represents the scale or the number of digits to the
+///   right of the decimal point in a numeric data type. It is used to determine the precision and scale of
+///   the `DataType::Decimal128` in the Arrow data type conversion.
+///
+/// * `datetime_precision`: The `datetime_precision` parameter refers to the precision of datetime data
+///   types like `time`, `timestamp`, or `timestamptz`. It specifies the number of fractional digits in
+///   the seconds part of the time value.
+///
+/// Returns:
+///
+/// The function `sql_to_arrow_type` returns a `Result` containing a `DataType` or a `NisabaError`.
 fn sql_to_arrow_type(
     data_type: &str,
     numeric_precision: Option<i32>,
@@ -344,6 +410,22 @@ fn sql_to_arrow_type(
 // Metric Computation Functions
 // ===============================
 #[derive(Debug, Clone)]
+/// The `FieldMetrics represents metrics related to a field, including character class
+/// signature, monotonicity, average byte length, and cardinality.
+///
+/// Properties:
+///
+/// * `char_class_signature`: The `char_class_signature` property is an array of 4 floating-point numbers (`f32`)
+///   and represents some kind of signature or pattern related to character classes in the field data.
+///
+/// * `monotonicity`: the `monotonicity` field is a boolean value that indicates whether the values in the field exhibit a
+///   monotonic pattern or not.
+///
+/// * `avg_byte_length`: The `avg_byte_length` property represents the average length of the bytes in the
+///   field. It is an optional `f32` value, which means it can either hold a floating-point number or be `None`.
+///
+/// * `cardinality`: The `cardinality` property represents the number of unique values in a field. It is
+///   a measure of the distinctiveness or diversity of values in the field.
 pub struct FieldMetrics {
     pub char_class_signature: [f32; 4],
     pub monotonicity: bool,
@@ -351,6 +433,18 @@ pub struct FieldMetrics {
     pub cardinality: f32,
 }
 
+/// The function `compute_field_metrics` processes a RecordBatch to compute various metrics for each
+/// field and returns a HashMap of field names mapped to their corresponding metrics.
+///
+/// Arguments:
+///
+/// * `batch`: The `compute_field_metrics` function takes a reference to a `RecordBatch` which represents
+///   a collection of rows with a consistent schema.
+///
+/// Returns:
+///
+/// The `compute_field_metrics` function returns a `Result` containing a `HashMap` mapping field names
+/// to `FieldMetrics`, or an error of type `NisabaError`.
 pub fn compute_field_metrics(
     batch: &RecordBatch,
 ) -> Result<HashMap<String, FieldMetrics>, NisabaError> {
@@ -383,6 +477,20 @@ pub fn compute_field_metrics(
     Ok(metrics)
 }
 
+/// The function `compute_char_class_signature` calculates the distribution of character classes in a
+/// string array.
+///
+/// Arguments:
+///
+/// * `samples`: The function `compute_char_class_signature` takes a reference to a trait object
+///   `samples` that implements the `Array` trait. The goal of this function is to compute a signature
+///   based on the character classes present in the data contained in the `samples` array.
+///
+/// Returns:
+///
+/// The function `compute_char_class_signature` returns an array of 4 floating-point numbers `[f32; 4]`.
+/// The array contains the ratios of different character classes (digits, alphabetic characters,
+/// whitespace characters, and other characters) found in the input samples.
 fn compute_char_class_signature(samples: &dyn Array) -> [f32; 4] {
     match samples.data_type() {
         DataType::LargeUtf8 | DataType::Utf8 => {
@@ -429,6 +537,18 @@ fn compute_char_class_signature(samples: &dyn Array) -> [f32; 4] {
     }
 }
 
+/// The function `detect_monotonicity` checks if the given array of samples is monotonically increasing.
+///
+/// Arguments:
+///
+/// * `samples`: The `detect_monotonicity` function takes a reference to a trait object `Array` as
+///   input, which represents an array of samples with different data types. The function checks if the
+///   samples are monotonically increasing based on their data type.
+///
+/// Returns:
+///
+/// The `detect_monotonicity` function returns a boolean value indicating whether the samples provided
+/// in the input array are monotonic (i.e., always increasing) or not.
 fn detect_monotonicity(samples: &dyn Array) -> bool {
     if samples.is_empty() {
         return true;
@@ -522,6 +642,19 @@ fn detect_monotonicity(samples: &dyn Array) -> bool {
     }
 }
 
+/// The function `compute_cardinality` calculates the cardinality ratio of unique values in a given
+/// array of data samples.
+///
+/// Arguments:
+///
+/// * `samples`: The function `compute_cardinality` takes a reference to a dynamic array `samples` as
+///   input and calculates the cardinality of the data in the array. The function uses different logic
+///   based on the data type of the array elements to determine the unique count of values in the array.
+///
+/// Returns:
+///
+/// The function `compute_cardinality` returns a `Result<f32, NisabaError>`, where the `Ok` variant
+/// contains the calculated cardinality as a floating-point number (`f32`).
 fn compute_cardinality(samples: &dyn Array) -> Result<f32, NisabaError> {
     if samples.is_empty() {
         return Ok(0.0);
@@ -614,6 +747,19 @@ fn compute_cardinality(samples: &dyn Array) -> Result<f32, NisabaError> {
     Ok(cc)
 }
 
+/// The function `compute_avg_byte_length` calculates the average byte length of strings or binary data
+/// in an array.
+///
+/// Arguments:
+///
+/// * `samples`: The `compute_avg_byte_length` function takes a reference to a trait object `samples`
+///   that implements the `Array` trait. The function calculates the average byte length of the elements
+///   in the array based on the data type of the array.
+///
+/// Returns:
+///
+/// The function `compute_avg_byte_length` returns a `Result` containing an `Option<f32>` or a
+/// `NisabaError`.
 fn compute_avg_byte_length(samples: &dyn Array) -> Result<Option<f32>, NisabaError> {
     match samples.data_type() {
         DataType::Utf8 => {
@@ -669,6 +815,16 @@ fn compute_avg_byte_length(samples: &dyn Array) -> Result<Option<f32>, NisabaErr
     }
 }
 
+/// The function `table_def_to_arrow_schema` converts a table definition into an Arrow schema.
+///
+/// Arguments:
+///
+/// * `table_def`: The `table_def` parameter is a reference to a `TableDef`, which
+///   contains information about the fields and properties of a table in a database.
+///
+/// Returns:
+///
+/// An `Arc` containing the Arrow schema representation of the table definition provided as input.
 fn table_def_to_arrow_schema(table_def: &TableDef) -> Arc<Schema> {
     let fields: Vec<Field> = table_def
         .fields

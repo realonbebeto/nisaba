@@ -15,6 +15,28 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// The code defines a struct `AnalyzerConfig` with various fields representing weights and thresholds
+/// for an analyzer configuration.
+///
+/// Properties:
+///
+/// * `type_weight`: The `type_weight` property represents the weight assigned to the type of an
+///   element when analyzing its importance or relevance.
+///
+/// * `sample_weight`: The `sample_weight` property represents the weight assigned to the samples when
+///   analyzing data. This weight is a floating-point value (f32) that influences the importance of
+///   samples in the analysis process.
+///
+/// * `structure_weight`: The `structure_weight` property represents the weight assigned to the
+///   structure of the data when performing analysis. This weight determines how important the structure
+///   of the data is compared to other factors in the analysis process.
+///
+/// * `similarity_threshold`: The `similarity_threshold` property represents the threshold value used
+///   to determine the similarity between items during analysis.
+///
+/// * `top_k`: The `top_k` property in the `AnalyzerConfig` struct is an optional field that specifies
+///   the maximum number of results to return. It is of type `Option<usize>`, which means it can either
+///   contain a `usize` value or be `None`. This allows for flexibility in the configuration,
 pub struct AnalyzerConfig {
     pub type_weight: f32,
     pub sample_weight: f32,
@@ -37,6 +59,23 @@ impl Default for AnalyzerConfig {
     }
 }
 
+/// The `SchemaAnalyzer` provides an interface for store reconciliation. It contains fields for name,
+/// configuration, inference engine registry, and latent store.
+///
+/// Properties:
+///
+/// * `name`: The `name` property is a `String` that represents the name of the schema analyzer.
+///
+/// * `config`: The `config` property holds a reference-counted smart pointer to an `AnalyzerConfig`
+///   instance, allowing shared ownership of the `AnalyzerConfig` data across multiple parts of the program.
+///
+/// * `inference_engine`: The `inference_engine` property in the `SchemaAnalyzer` struct is of type
+///   `InferenceEngineRegistry`. It is used to store and manage inference engines that are responsible for
+///   analyzing and inferring information from the schema data.
+///
+/// * `latent_store`: The `latent_store` property in the `SchemaAnalyzer` struct is of type
+///   `Arc<LatentStore>`. It is an atomic reference-counted smart pointer that allows shared ownership of
+///   the `LatentStore` instance. This means that multiple parts of the code can have access to the embedding store`
 pub struct SchemaAnalyzer {
     pub(crate) name: String,
     pub(crate) config: Arc<AnalyzerConfig>,
@@ -53,6 +92,21 @@ impl std::fmt::Debug for SchemaAnalyzer {
 }
 
 impl SchemaAnalyzer {
+    /// The `analyze` function takes multiple collections/tables as inputs, infers their
+    /// schemas, clusters them based on similarities.
+    ///
+    /// Arguments:
+    ///
+    /// * `configs`: The `configs` parameter in the `analyze` function is a vector of `StorageConfig`
+    ///   structs. These `StorageConfig` structs contains configuration information related to
+    ///   storage settings, such as database connection details.
+    ///
+    /// Returns:
+    ///
+    /// The `analyze` function returns a `Result` containing either an `Option` of a vector of
+    /// `TableCluster` objects or a `NisabaError`. If the clustering process is successful and at least
+    /// one cluster is formed, it returns `Ok(Some(clusters))` with the clustered tables. If no clusters
+    /// are formed, it returns `Ok(None)`.
     pub async fn analyze(
         &self,
         configs: Vec<StorageConfig>,
@@ -94,6 +148,17 @@ impl SchemaAnalyzer {
         Ok(None)
     }
 
+    /// The `index_schemas` function asynchronously initializes a table handler, stores schema
+    /// items, and returns a result indicating success or an error.
+    ///
+    /// Arguments:
+    ///
+    /// * `schema_items`: `schema_items` is a slice of `TableDef` items that are passed as a parameter
+    ///   to the `index_schemas` function.
+    ///
+    /// Returns:
+    ///
+    /// The `index_schemas` function is returning a `Result<(), NisabaError>`.
     async fn index_schemas(&self, schema_items: &[TableDef]) -> Result<(), NisabaError> {
         let table_handler = self
             .latent_store
@@ -106,6 +171,22 @@ impl SchemaAnalyzer {
         Ok(())
     }
 
+    /// The `cluster_fields` function asynchronously clusters fields based on table definitions
+    /// and stores the results in a vector.
+    ///
+    /// Arguments:
+    ///
+    /// * `clusters`: The `clusters` parameter is a mutable slice of `TableCluster` structs. It
+    ///   represents a collection of clusters, each containing information about tables and their field
+    ///   clusters.
+    ///
+    /// * `table_defs`: The `table_defs` parameter is a slice of `TableDef` structs. Each `TableDef` struct
+    ///   likely contains information about a table, including its ID and a vector of field definitions
+    ///   (`FieldDef`).
+    ///
+    /// Returns:
+    ///
+    /// The `cluster_fields` function is returning a `Result<(), NisabaError>`.
     async fn cluster_fields(
         &self,
         clusters: &mut [TableCluster],
@@ -173,6 +254,24 @@ impl SchemaAnalyzer {
     }
 }
 
+/// The `SchemaAnalyzerBuilder` helps build the schema analyzer. It contains fields for configuration related to schema
+/// analysis.
+///
+/// Properties:
+///
+/// * `name`: The `name` property is used to store the name of the schema analyzer being built.
+///   It is a `String` type and is marked as `pub(crate)` which means it is accessible within the same crate.
+///
+/// * `config`: The `config` property holds configuration settings or parameters for the schema analyzer.
+///   These settings could include things like thresholds, rules, or options that affect how the schema analysis
+///   is performed.
+///
+/// * `inference_registry`: The `inference_registry` property is of type `InferenceEngineRegistry`. It stores and
+///   manages inference engines that are responsible for inferring schema information.
+///
+///
+/// * `latent_store`: The `latent_store` property is of type `Arc<LatentStore>`. It is used to store and
+///   manage latent data within the schema analyzer.
 pub struct SchemaAnalyzerBuilder {
     // fields for configuration
     pub(crate) name: String,
@@ -213,7 +312,8 @@ impl SchemaAnalyzerBuilder {
     ///
     /// Arguments:
     ///
-    /// * `name`: The `name` parameter is a reference to a string (`&str`) that represents the name you want to assign to the object. The intuition is to having multiple analyzers whose outputs can be averaged.
+    /// * `name`: The `name` parameter is a reference to a string (`&str`) that represents the name you
+    ///   want to assign to the object.
     ///
     /// Returns:
     ///

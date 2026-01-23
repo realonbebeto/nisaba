@@ -55,11 +55,36 @@ impl SQLInferenceEngine {
         SQLInferenceEngine::default()
     }
 
+    /// The `with_sample_size` function sets the sample size that will be used for inference
+    ///
+    /// Arguments:
+    ///
+    /// * `size`: The `size` parameter in the `with_sample_size` function represents the sample size
+    ///   that is desired to be used for inference purposes.
+    ///
+    /// Returns:
+    ///
+    /// The `self` object is being returned after setting the `sample_size` field to the provided `size`
+    /// value.
     pub fn with_sample_size(mut self, size: usize) -> Self {
         self.sample_size = size;
         self
     }
 
+    /// The function `infer_from_mysql` asynchronously reads table fields from a MySQL database,
+    /// converts them into table definitions, enriches the definitions with various metrics, and returns
+    /// the resulting table definitions.
+    ///
+    /// Arguments:
+    ///
+    /// * `config`: The `config` parameter in the `infer_from_mysql` function is of type
+    ///   `&StorageConfig`, which is a reference to a `StorageConfig` struct. This parameter is used to
+    ///   provide configuration details for connecting to a MySQL database, such as the connection string.
+    ///
+    /// Returns:
+    ///
+    /// The function `infer_from_mysql` returns a `Result` containing a vector of `TableDef` structs or
+    /// a `NisabaError` if an error occurs during the process.
     async fn infer_from_mysql(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         let conn_str = config.connection_string()?;
 
@@ -93,6 +118,19 @@ impl SQLInferenceEngine {
         Ok(table_defs)
     }
 
+    /// The function `infer_from_postgres` reads table definitions from a PostgreSQL database, enriches
+    /// them with additional metrics, and returns the resulting table definitions.
+    ///
+    /// Arguments:
+    ///
+    /// * `config`: The `config` parameter in the `infer_from_postgres` function is of type
+    ///   `&StorageConfig`, which is a reference to a `StorageConfig` struct. This parameter is used to
+    ///   provide configuration details for connecting to a PostgreSQL database.
+    ///
+    /// Returns:
+    ///
+    /// The `infer_from_postgres` function returns a `Result` containing a vector of `TableDef` structs
+    /// or a `NisabaError` if an error occurs during the process.
     async fn infer_from_postgres(
         &self,
         config: &StorageConfig,
@@ -129,6 +167,21 @@ impl SQLInferenceEngine {
         Ok(table_defs)
     }
 
+    /// The function `infer_from_sqlite` asynchronously reads data from a SQLite database,
+    /// processes and enriches the data by inferring types and other metrics for each table, and returns
+    /// a vector of `TableDef` structs.
+    ///
+    /// Arguments:
+    ///
+    /// * `config`: The `config` parameter in the `infer_from_sqlite` function is of type
+    ///   `&StorageConfig`, which is a reference to a `StorageConfig` struct. This parameter is used to
+    ///   provide configuration settings for the storage connection, such as the connection string needed
+    ///   to establish a connection to the SQLite instance.
+    ///
+    /// Returns:
+    ///
+    /// The function `infer_from_sqlite` returns a `Result` containing a vector of `TableDef` structs or
+    /// a `NisabaError` if an error occurs during the execution.
     async fn infer_from_sqlite(
         &self,
         config: &StorageConfig,
@@ -282,6 +335,18 @@ impl SQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for SQLInferenceEngine {
+    /// The `infer_schema` function infers the schema of a database table based on the specified
+    /// storage configuration.
+    ///
+    /// Arguments:
+    ///
+    /// * `config`: The `config` parameter is of type `StorageConfig`, contains information
+    ///   about the storage configuration such as the backend being used (MySQL, PostgreSQL, SQLite).
+    ///
+    /// Returns:
+    ///
+    /// The `infer_schema` function returns a `Result` containing a vector of `TableDef` structs or a
+    /// `NisabaError` if an error occurs during the schema inference process.
     fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
         match config.backend {
             StorageBackend::MySQL => block_on(self.infer_from_mysql(config)),
@@ -310,6 +375,20 @@ impl SchemaInferenceEngine for SQLInferenceEngine {
 // Postgres Inference
 // ====================
 
+/// The `read_postgres_table` function infers the schema of a database table based on the specified
+/// storage configuration.
+///
+/// Arguments:
+///
+/// * `pool`: The `pool` parameter is a reference of `PgPool`, providing pooled connections to Postgres.
+/// * `table_def`: The `table_def` parameter is a reference of `TableDef`, providing table information.
+/// * `sample_size`: The `sample_size` parameter is of type usize, providing size of which to use for
+///   inference.
+///
+/// Returns:
+///
+/// The `read_postgres_table` function returns a `Result` containing an `Option` of `RecordBatch` or a
+/// `NisabaError` if an error occurs during record batch creation.
 async fn read_postgres_table(
     pool: &PgPool,
     table_def: &TableDef,
@@ -324,6 +403,18 @@ async fn read_postgres_table(
     build_record_batches(rows, table_def)
 }
 
+/// The `read_postgres_fields` function reads the fields from the information_schema.columns view
+/// of the database connection specified
+///
+/// Arguments:
+///
+/// * `pool`: The `pool` parameter is a reference of `PgPool`, providing pooled connections to Postgres.
+/// * `config`: The `config` parameter is a reference of `StorageConfig`, providing database connection details.
+///
+/// Returns:
+///
+/// The `read_postgres_fields` function returns a `Result` containing a `Vec` of `SourceField` or a
+/// `NisabaError` if an error occurs during reading the source view.
 async fn read_postgres_fields(
     pool: &PgPool,
     config: &StorageConfig,
@@ -383,6 +474,18 @@ async fn read_postgres_fields(
     Ok(source_fields)
 }
 
+/// The `build_record_batches` function converts row values to columnar representation RecordBatch
+///
+/// Arguments:
+///
+/// * `rows`: The `rows` parameter is a `Vec` of objects implementing sqlx Row trait.
+/// * `table_def`: The `table_def` parameter is a reference of `TableDef`, providing table information
+///   for schema generation.
+///
+/// Returns:
+///
+/// The `build_record_batches` function returns a `Result` containing an `Option` of `recordBatch` or a
+/// `NisabaError` if an error occurs during RecordBatch creation.
 fn build_record_batches<R>(
     rows: Vec<R>,
     table_def: &TableDef,
@@ -444,6 +547,20 @@ where
 // ====================
 // MySQL Inference
 // ====================
+/// The `read_mysql_table` function infers the schema of a database table based on the specified
+/// storage configuration.
+///
+/// Arguments:
+///
+/// * `pool`: The `pool` parameter is a reference of `MySqlPool`, providing pooled connections to MySQL.
+/// * `table_def`: The `table_def` parameter is a reference of `TableDef`, providing table information.
+/// * `sample_size`: The `sample_size` parameter is of type usize, providing size of which to use for
+///   inference.
+///
+/// Returns:
+///
+/// The `read_mysql_table` function returns a `Result` containing an `Option` of `RecordBatch` or a
+/// `NisabaError` if an error occurs during record batch creation.
 async fn read_mysql_table(
     pool: &MySqlPool,
     table_def: &TableDef,
@@ -458,6 +575,18 @@ async fn read_mysql_table(
     build_record_batches(rows, table_def)
 }
 
+/// The `read_mysql_fields` function reads the fields from the information_schema.columns view
+/// of the database connection specified
+///
+/// Arguments:
+///
+/// * `pool`: The `pool` parameter is a reference of `MySqlPool`, providing pooled connections to MySQL.
+/// * `config`: The `config` parameter is a reference of `StorageConfig`, providing database connection details.
+///
+/// Returns:
+///
+/// The `read_mysql_fields` function returns a `Result` containing a `Vec` of `SourceField` or a
+/// `NisabaError` if an error occurs during reading the source view.
 async fn read_mysql_fields(
     pool: &MySqlPool,
     config: &StorageConfig,
@@ -520,6 +649,20 @@ async fn read_mysql_fields(
 // ====================
 // SQLite Inference
 // ====================
+/// The `read_sqlite_table` function infers the schema of a database table based on the specified
+/// storage configuration.
+///
+/// Arguments:
+///
+/// * `pool`: The `pool` parameter is a reference of `SqlitePool`, providing pooled connections to Sqlite.
+/// * `table_def`: The `table_def` parameter is a reference of `TableDef`, providing table information.
+/// * `sample_size`: The `sample_size` parameter is of type usize, providing size of which to use for
+///   inference.
+///
+/// Returns:
+///
+/// The `read_sqlite_table` function returns a `Result` containing an `Option` of `RecordBatch` or a
+/// `NisabaError` if an error occurs during record batch creation.
 async fn read_sqlite_table(
     pool: &SqlitePool,
     table_def: &TableDef,
@@ -534,6 +677,18 @@ async fn read_sqlite_table(
     build_record_batches(rows, table_def)
 }
 
+/// The `read_sqlite_fields` function reads the fields from sqlite_master view and PRAGMA table commands
+/// of the database connection specified
+///
+/// Arguments:
+///
+/// * `pool`: The `pool` parameter is a reference of `SqlitePool`, providing pooled connections to Sqlite.
+/// * `config`: The `config` parameter is a reference of `StorageConfig`, providing database connection details.
+///
+/// Returns:
+///
+/// The `read_sqlite_fields` function returns a `Result` containing a `Vec` of `SourceField` or a
+/// `NisabaError` if an error occurs during reading the source view.
 async fn read_sqlite_fields(
     pool: &SqlitePool,
     config: &StorageConfig,
@@ -596,6 +751,19 @@ async fn read_sqlite_fields(
     Ok(source_fields)
 }
 
+/// The `create_array_builder` function creates an array builder depending on the datatype
+///
+/// Arguments:
+///
+/// * `data_type`: The `data_type` parameter is a reference of `DataType`, to determine what type of
+///   array builder to create.
+/// * `capacity`: The `capacity` parameter is of type `usize`, providing a limit of memmory to reserve.
+/// * `byte_size`: The `byte_size` parameter is of type `Option usize`, providing limit for fixed width data
+///   like binary or utf8 to assist in memory reservation.
+///
+/// Returns:
+///
+/// The `create_array_builder` function returns a `Box` containing an object implementing `ArrayBuilder`.
 fn create_array_builder(
     data_type: &DataType,
     capacity: usize,
@@ -671,6 +839,21 @@ fn create_array_builder(
 // =======================
 // Value Appender
 // =======================
+/// The `append_value` function determines which builder to append value to
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+/// * `field`: The `field` parameter is reference to `Field` providing the DataType to determine which builder
+///   to which value will be appended to.
+///
+/// Returns:
+///
+/// The `append_value` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a value.
 fn append_value<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -729,6 +912,19 @@ where
     }
 }
 
+/// The `append_binary` function appends binary to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_binary` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a binary.
 fn append_binary<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -754,6 +950,19 @@ where
     Ok(())
 }
 
+/// The `append_bool` function appends bool to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_bool` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a bool.
 fn append_bool<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -782,6 +991,19 @@ where
     Ok(())
 }
 
+/// The `append_date` function appends date to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_date` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a date.
 fn append_date<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -845,6 +1067,19 @@ where
     Ok(())
 }
 
+/// The `append_decimal` function appends decimal to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_decimal` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a decimal.
 fn append_decimal<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -880,6 +1115,19 @@ where
     Ok(())
 }
 
+/// The `append_float32` function appends float32 to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_float32` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a float32.
 fn append_float32<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -908,6 +1156,19 @@ where
     Ok(())
 }
 
+/// The `append_float64` function appends float64 to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_float64` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a float64.
 fn append_float64<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -938,6 +1199,19 @@ where
     Ok(())
 }
 
+/// The `append_int` function appends int to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_int` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a int.
 fn append_int<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -972,6 +1246,19 @@ where
     Ok(())
 }
 
+/// The `append_string` function appends string to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_string` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a string.
 fn append_string<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -997,6 +1284,19 @@ where
     Ok(())
 }
 
+/// The `append_time` function appends time to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_time` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a time.
 fn append_time<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -1027,6 +1327,19 @@ where
     Ok(())
 }
 
+/// The `append_timestamp` function appends timestamp to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_timestamp` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a timestamp.
 fn append_timestamp<'r, R, T>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,
@@ -1093,6 +1406,19 @@ where
     Ok(())
 }
 
+/// The `append_fixed_size_binary` function appends fixed_size_binary to builder
+///
+/// Arguments:
+///
+/// * `builder`: The `builder` parameter is a mutable reference of Box of type implementing `ArrayBuilder`, where
+///   values are to be appended to.
+/// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
+/// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+///
+/// Returns:
+///
+/// The `append_fixed_size_binary` function returns a `Result` containing a unit value or a
+/// `NisabaError` if an error occurs during appending a fixed_size_binary.
 fn append_fixed_size_binary<'r, R>(
     builder: &mut Box<dyn ArrayBuilder>,
     row: &R,

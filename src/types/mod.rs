@@ -1,3 +1,12 @@
+//! Store element implementations
+//!
+//! Overview
+//! - [`FieldDef`]: A vital type responsible for holding all metadata about a field store element.
+//! - [`Matchable`]: A trait responsible for id and silo_id on store element retrieval from latent store.
+//! - [`MatchCandidate`]: A trait responsible for giving access to attributes of search results after retrieval.
+//! - [`TableDef`]: A vital type responsible for logical organization of FieldDef and a table store element.
+//!
+
 use arrow::datatypes::{DataType, Field};
 
 use std::sync::Arc;
@@ -10,6 +19,7 @@ pub use table::TableDef;
 
 use crate::analyzer::retriever::Storable;
 
+/// Trait used to give access to id and silo_id on storage or retrieval.
 pub trait Matchable {
     type Id: Clone;
     type Match: MatchCandidate<Id = Self::Id>;
@@ -18,6 +28,7 @@ pub trait Matchable {
     fn silo_id(&self) -> &str;
 }
 
+/// Trait used to give access to details of a TableMatch/FieldMatch
 #[allow(unused)]
 pub trait MatchCandidate {
     type Id: Clone;
@@ -29,6 +40,11 @@ pub trait MatchCandidate {
     fn body(&self) -> &Self::Body;
 }
 
+/// The `get_field_defs` functions gets FieldDef arrow Field defininitions.
+///
+/// Returns:
+///
+/// A Vec of Field that are associated/attributed to a FieldDef for Schema generation
 pub fn get_field_defs() -> Vec<Field> {
     vec![
         Field::new("id", DataType::FixedSizeBinary(16), false),

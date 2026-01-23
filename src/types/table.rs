@@ -24,9 +24,13 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct TableDef {
+    /// Global unique Id for the table
     pub id: Uuid,
+    /// Id of silo in which the table is member
     pub silo_id: String,
+    /// Name of the table
     pub name: String,
+    /// Vec of the FieldDef associated with table
     pub fields: Vec<FieldDef>,
 }
 
@@ -263,6 +267,12 @@ impl Storable for TableDef {
 }
 
 impl TableDef {
+    /// The `structure` function profiles the fields of the TableDef by count and DataType
+    /// for linear projection purposes
+    ///
+    /// Returns
+    ///
+    /// A `TableStats`
     fn structure(&self) -> TableStats {
         let mut structure = TableStats::default();
 
@@ -343,6 +353,15 @@ impl TableDef {
     }
 }
 
+/// The `build_fields_array` function takes
+///
+/// Arguments:
+///
+/// * `tbl_schema`: The `tbl_schema` parameter is a slice of TableDef
+///
+/// Returns:
+///
+/// A `Result` of ArrayRef (implements arrow's Array trait behind Arc pointer)
 fn build_fields_array(
     tbl_schema: &[TableDef],
     config: Arc<AnalyzerConfig>,
@@ -548,6 +567,17 @@ fn build_fields_array(
     Ok(Arc::new(fields_list))
 }
 
+/// The `extract_field_defs` functions processes a StructArray and returns a Vec of FieldDef
+/// This is essential when reading TableDefs from latent store
+///
+/// Arguments:
+///
+/// *`struct_array`: The `struct_array` parameter is a reference that constitutes values
+///   and fields associated with TableDefs
+///
+/// Returns:
+///
+/// A Vec of FieldDef
 fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, NisabaError> {
     let num_fields = struct_array.len();
     let mut field_defs = Vec::with_capacity(num_fields);
@@ -692,6 +722,7 @@ fn extract_field_defs(struct_array: &StructArray) -> Result<Vec<FieldDef>, Nisab
 }
 
 #[derive(Debug)]
+/// The `TableStats` provides a numeric profile of how table is constituted by DataType
 pub struct TableStats {
     pub num_array: f32,
     pub num_decimal128: f32,
@@ -716,6 +747,12 @@ pub struct TableStats {
 }
 
 impl TableStats {
+    /// The `embedding` function runs to generate an embedding from
+    /// the numeric profile through linear projection
+    ///
+    /// Returns:
+    ///
+    /// A nalgebra Matrix of floats
     fn embedding(&self) -> DVector<f32> {
         let raw_embed: SVector<f32, 19> = SVector::from_vec(vec![
             self.num_array,

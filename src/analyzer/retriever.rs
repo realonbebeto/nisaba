@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 use crate::{analyzer::AnalyzerConfig, error::NisabaError};
 
+/// The `Storable` trait defines how to access common attributes of the store
+/// element (TableDef/FieldDef) during latent store storage and retrieval.
 pub trait Storable: Send + Sync {
     /// The result type returned from similarity search
     ///
@@ -22,8 +24,10 @@ pub trait Storable: Send + Sync {
     /// Get the schema for this type
     fn schema() -> Arc<Schema>;
 
+    /// Get name of the store element (TableDef/FieldDef)
     fn name(&self) -> &String;
 
+    /// Get the id of the store element (TableDef/FieldDef)
     fn get_id(&self) -> Uuid;
 
     /// Get silo_id
@@ -49,10 +53,16 @@ pub trait Storable: Send + Sync {
     /// Get the embedding vector for this item
     fn embedding(&self, config: Arc<AnalyzerConfig>) -> Result<Vec<f32>, NisabaError>;
 
+    /// Get the columns required to fetch results from latent store
     fn result_columns() -> Vec<String>;
 }
 
 #[derive(Clone)]
+/// The `LatentStore` represents an interface to access Lancedb store
+///
+/// Properties:
+///
+/// * `conn`: The `conn` property is a `Connection` to Lancedb.
 pub struct LatentStore {
     conn: Connection,
 }
@@ -81,6 +91,16 @@ impl LatentStore {
         LatentStore { conn }
     }
 
+    /// The `table_handler` is a function represents the result of a clustering process
+    ///
+    /// Arguments:
+    ///
+    /// * `conn`: The `conn` property is a `Connection` to Lancedb.
+    /// * `config`: The `config` property is a shared holder to AnalyzerConfig.
+    ///
+    /// Returns:
+    ///
+    /// A table_handler of type TableHandler of generic T
     pub fn table_handler<T: Storable>(&self, config: Arc<AnalyzerConfig>) -> TableHandler<T> {
         TableHandler {
             conn: self.conn.clone(),
@@ -90,9 +110,17 @@ impl LatentStore {
     }
 }
 
+/// The `TableHandler` represents a connection over store element which implements Storable trait
+///
+/// Properties:
+///
+/// * `conn`: The `conn` property is a `Connection` to Lancedb.
+/// * `config`: The `config` property is a shared holder to AnalyzerConfig.
 pub struct TableHandler<T: Storable> {
     conn: Connection,
     config: Arc<AnalyzerConfig>,
+    // Marker to hold a Storable type
+    // Used to associate the handler with a specific Storable type
     _phantom: PhantomData<T>,
 }
 
@@ -109,6 +137,16 @@ impl<T: Storable> TableHandler<T> {
         Ok(())
     }
 
+    /// This `store` function takes in types that implements Storable trait for storage
+    ///
+    /// Arguments:
+    ///
+    /// * `items`: The `items` parameter is a slice of types that implements Storable trait
+    ///
+    /// Returns:
+    ///
+    /// A `Result` of unit value on success and NisabaError when connection to Latent Store,
+    /// RecordBatch conversion, storage or index creation fails.
     pub async fn store(&self, items: &[T]) -> Result<(), NisabaError> {
         let tbl = self.conn.open_table(T::vtable_name()).execute().await?;
 
@@ -134,6 +172,22 @@ impl<T: Storable> TableHandler<T> {
         Ok(())
     }
 
+    /// This `search` function performs a search in the latent store and returns a vector
+    /// of FieldMatch or TableMatch
+    ///
+    /// Arguments:
+    ///
+    /// * `item`: The `item` parameter is a reference of type implementing Storable.
+    ///
+    /// * `config`: The `config` property is a shared holder to AnalyzerConfig.
+    ///
+    /// * `columns`: The `columns` property is a Vec of String used to return the required
+    ///   set of fields from the latent store.
+    ///
+    /// Returns:
+    ///
+    /// A `Result` of a `Vec` of SearchResult values on success and NisabaError when
+    /// embedding generation, search, and creation of the SearchResult fails.
     pub async fn search(
         &self,
         item: &T,
@@ -172,6 +226,7 @@ impl<T: Storable> TableHandler<T> {
     }
 }
 
+/// A function that creates/provides local path to where the latent store will be created or is existing
 fn db_path(dir_path: Option<&str>) -> PathBuf {
     match dir_path {
         Some(v) => {

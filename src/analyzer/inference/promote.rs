@@ -44,7 +44,22 @@ impl CastSafety {
     }
 }
 
-/// Determines casting safety bewtween arrow types
+/// The function `cast_safety` in determines the safety of casting between different data types
+/// based on specific rules for numeric, timestamp, date, and string/JSON conversions.
+///
+/// Arguments:
+///
+/// * `from`: The `from` parameter in the `cast_safety` function represents the data type that you want
+///   to cast from. It is a reference to a `DataType` enum which specifies the original data type of the
+///   value you want to convert.
+/// * `to`: The `to` parameter in the `cast_safety` function represents the data type that you want to
+///   cast to.
+///
+/// Returns:
+///
+/// The function `cast_safety` returns a value of type `CastSafety`, which indicates the safety level of
+/// casting from one data type to another. The possible return values are `Safe`, `FallibleLossy`, or
+/// `Unsafe` based on the specific conversion rules defined in the function.
 pub fn cast_safety(from: &DataType, to: &DataType) -> CastSafety {
     // Exact match is always safe
     if from == to {
@@ -101,6 +116,23 @@ pub fn cast_safety(from: &DataType, to: &DataType) -> CastSafety {
 }
 
 #[derive(Debug, Clone)]
+/// The `DeltaStats`  contains fields for various statistical ratios and values related to
+/// delta calculations.
+///
+/// Properties:
+///
+/// * `small_delta_ratio`: The `small_delta_ratio` property in `DeltaStats` represents the
+///   ratio of deltas that have an absolute value less than or equal to a specified threshold, typically
+///   denoted as `small_threshold`.
+/// * `mode_ratio`: The `mode_ratio` property in `DeltaStats` represents the fraction of
+///   deltas that are equal to the mode_delta value. This value indicates how frequently the mode_delta
+///   value appears in the dataset compared to other delta values.
+/// * `long_run_ratio`: The `long_run_ratio` property in `DeltaStats` represents the fraction
+///   of rows belonging to the longest uninterrupted delta run. This means it indicates the proportion of
+///   consecutive rows in the data where the delta values remain the same without interruption.
+/// * `median_abs_delta`: The `median_abs_delta` property in `DeltaStats` represents the
+///   median value of the absolute deltas in a dataset. This value is calculated by arranging all the
+///   absolute delta values in ascending order and then selecting the middle value.
 pub struct DeltaStats {
     /// Ratio of |delta| ≤ small_threshold (usually 1 or unit-sized)
     pub small_delta_ratio: f32,
@@ -112,6 +144,56 @@ pub struct DeltaStats {
     pub median_abs_delta: f32,
 }
 
+/// The `ColumnStats` represents statistical information about a column in a dataset.
+///
+/// Properties:
+///
+/// * `sample_size`: The `sample_size` property in `ColumnStats` represents the total number
+///   of values in the column that were used to calculate the statistics.
+/// * `null_count`: The `null_count` property in `ColumnStats` represents the number of null
+///   values present in the column for which the statistics are being calculated.
+/// * `distinct_count`: The `distinct_count` property in `ColumnStats` represents the number
+///   of unique or distinct values present in the column for which the statistics are being calculated.
+/// * `avg_length`: The `avg_length` property in `ColumnStats` represents the average length
+///   of values in the column. It is an `Option<f32>`, which means it can either contain the average
+///   length as a floating-point number or be `None` if the average length when applicable.
+/// * `sample_values`: The `sample_values` property in `ColumnStats` is a reference to a
+///   dynamic array (`dyn Array`) with an associated lifetime `'a`. This allows you to store a collection
+///   of values of unknown type that implement the `Array` trait.
+/// * `min_val`: The `min_val` property in `ColumnStats` represents the minimum value found
+///   in the column for which these statistics are calculated. It is an optional field, meaning it may or
+///   may not have a value..
+/// * `max_val`: The `max_val` property in `ColumnStats` represents the maximum value found
+///   in the column for which the statistics are being calculated. It is an `Option<i64>`, meaning it can
+///   either contain the maximum value as an `i64` or be `None`.
+/// * `quantiles_i32`: The `quantiles_i32` property in `ColumnStats` represents an optional
+///   array of 7 integers. These integers correspond to different percentiles for the data in the column.
+/// * `longest_run_ratio`: The `longest_run_ratio` property in `ColumnStats` represents the
+///   ratio of the length of the longest consecutive run of identical values to the total number of values
+///   in the column. It can be used to analyze the presence of patterns or repeated values within the data.
+/// * `delta_stats`: The `delta_stats` property in `ColumnStats` likely represents statistics
+///   related to the differences or changes between consecutive values in the column.
+/// * `entropy`: The `entropy` property in `ColumnStats` represents the entropy value of the
+///   column. Entropy is a measure of the amount of uncertainty or randomness in the data. In the context
+///   of data analysis, entropy is often used to quantify the information content or predictability of a
+///   data.
+/// * `temporal_mod_entropy`: The `temporal_mod_entropy` property in `ColumnStats` represents
+///   the modulo entropy value for temporal(time related) data in the column.
+/// * `character_max_length`: The `character_max_length` property in `ColumnStats` represents
+///   the maximum length of characters in the column. It indicates the maximum number of characters
+///   present in any value within the column.
+/// * `character_min_length`: The `character_min_length` property in `ColumnStats` represents
+///   the minimum length of characters in the column. It is an optional field, meaning it may or may not
+///   have a value associated with it.
+/// * `numeric_precision`: The `numeric_precision` property in `ColumnStats` represents the
+///   precision of numeric values in the column. It indicates the total number of digits that can be
+///   stored, both to the left and right of the decimal point.
+/// * `numeric_scale`: The `numeric_scale` property in `ColumnStats` represents the scale of
+///   a numeric value. In the context of numeric data types, scale refers to the number of digits to the
+///   right of the decimal point in a number.
+/// * `datetime_precision`: The `datetime_precision` property in `ColumnStats` represents the
+///   precision of datetime values in the column. This property is an `Option<i32>`, meaning it can either
+///   contain an integer value representing the precision or be `None` when applicable.
 pub struct ColumnStats<'a> {
     pub sample_size: usize,
     pub null_count: usize,
@@ -133,6 +215,8 @@ pub struct ColumnStats<'a> {
 }
 
 impl<'a> ColumnStats<'a> {
+    /// The function `new` creates an instance of `ColumnStats` from an Arrow array
+    /// by means of taking a refence of a type that implements Array trait.
     pub fn new(array: &'a dyn Array) -> Self {
         let sample_size = array.len();
         let null_count = array.null_count();
@@ -173,6 +257,15 @@ impl<'a> ColumnStats<'a> {
         stats
     }
 
+    /// The method `null_ratio` calculates the null proportion in sampled values.
+    ///
+    /// Arguments:
+    /// * `self`: reference of ColumnStats
+    ///
+    /// Returns:
+    ///
+    /// The functions returns a floating-point number representing the null proportion of
+    /// the sampled data
     pub fn null_ratio(&self) -> f32 {
         if self.sample_size == 0 {
             0.0
@@ -181,6 +274,18 @@ impl<'a> ColumnStats<'a> {
         }
     }
 
+    /// The function `extract_stats_from_int_array` extracts statistics such as distinct count, maximum
+    /// value, minimum value, and entropy from an integer array.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `extract_stats_from_int_array` function is a
+    ///   mutable reference to a `ColumnStats` struct or object. This function extracts statistics
+    ///   from an array of integer values stored in the `sample_values` field of the `ColumnStats` object
+    ///
+    /// Returns:
+    ///
+    /// The function `extract_stats_from_int_array` is returning a `Result<(), NisabaError>`.
     fn extract_stats_from_int_array(stats: &mut ColumnStats) -> Result<(), NisabaError> {
         let values = stats
             .sample_values
@@ -205,6 +310,18 @@ impl<'a> ColumnStats<'a> {
         Ok(())
     }
 
+    /// The function `extract_stats_from_string_array` calculates various statistics from a string
+    /// array, such as distinct count, character lengths, average length, and entropy.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `extract_stats_from_string_array` function seems to be a
+    ///   mutable reference to a struct or object of type `ColumnStats`. This function is designed to
+    ///   extract various statistics from a sample of string values stored in the `stats` object.
+    ///
+    /// Returns:
+    ///
+    /// The function `extract_stats_from_string_array` is returning a `Result<(), NisabaError>`.
     fn extract_stats_from_string_array(stats: &mut ColumnStats) -> Result<(), NisabaError> {
         let values = stats
             .sample_values
@@ -234,6 +351,20 @@ impl<'a> ColumnStats<'a> {
         Ok(())
     }
 
+    /// The function calculates the normalized entropy of a collection of strings.
+    ///
+    /// Arguments:
+    ///
+    /// * `values`: The `normalized_string_entropy` function calculates the entropy of a collection of
+    ///   strings. The `values` parameter is an iterator that yields `Option<&str>` values.
+    ///
+    /// The function flattens the iterator to iterate over the actual strings and then calculates the entropy based
+    /// on the character frequencies in those strings.
+    ///
+    /// Returns:
+    ///
+    /// The function `normalized_string_entropy` returns a floating-point value representing the
+    /// normalized entropy of the input strings provided as an iterator of optional string references.
     fn normalized_string_entropy<'b>(values: impl Iterator<Item = Option<&'b str>>) -> f32 {
         let mut incident_counts: HashMap<char, usize> = HashMap::new();
         let mut total_incidents = 0;
@@ -262,6 +393,19 @@ impl<'a> ColumnStats<'a> {
         entropy / (incident_counts.len() as f32).log2()
     }
 
+    /// The function `normalized_int_entropy` calculates the normalized entropy of a sequence of
+    /// integers based on the frequency of different elements.
+    ///
+    /// Arguments:
+    ///
+    /// * `values`: The function `normalized_int_entropy` calculates the normalized entropy of a
+    ///   sequence of integers. The input parameter `values` is an iterator that yields integer values.
+    ///   The function processes the values to compute the entropy based on the frequency of integer values.
+    ///
+    /// Returns:
+    ///
+    /// The function `normalized_int_entropy` returns a floating-point value (`f32`) representing the
+    /// normalized entropy of the input integer values provided by the iterator.
     fn normalized_int_entropy(values: impl Iterator<Item = i64>) -> f32 {
         let mut incident_counts: HashMap<i64, usize> = HashMap::new();
         let mut total_incidents = 0;
@@ -298,6 +442,32 @@ impl<'a> ColumnStats<'a> {
 }
 
 #[derive(Debug, Clone)]
+/// The `PromotionResult` represents the result of a data type promotion operation,
+/// including destination type, confidence level, and optional metadata.
+///
+/// Properties:
+///
+/// * `dest_type`: The `dest_type` property in `PromotionResult` represents the data type to
+///   which a value is being promoted or converted.
+/// * `confidence`: The `confidence` property in `PromotionResult` represents the level of
+///   certainty or belief in the promotion result. It is a floating-point number (`f32`) typically ranging
+///   from 0.0 to 1.0, where 1.0 indicates full confidence in the result.
+/// * `nullable`: The `nullable` property in `PromotionResult` indicates whether the
+///   corresponding data type can accept NULL values or not. If `nullable` is `true`, it means that NULL
+///   values are allowed for that data type.
+/// * `character_maximum_length`: The `character_maximum_length` property in the `PromotionResult`
+///   represents the maximum length of characters for a data type. It is an optional field, meaning
+///   it may or may not have a value depending on the data type being described.
+/// * `numeric_precision`: The `numeric_precision` property in `PromotionResult` represents
+///   the precision of a numeric data type. It specifies the total number of digits that can be stored,
+///   including both the digits before and after the decimal point.
+/// * `numeric_scale`: The `numeric_scale` property in `PromotionResult` represents the scale
+///   of a numeric value. In the context of numeric data types, scale refers to the number of digits to
+///   the right of the decimal point in a number.
+/// * `datetime_precision`: The `datetime_precision` property in `PromotionResult` represents
+///   the precision of a datetime data type. This property is an `Option<i32>`, meaning it can either
+///   contain an integer value representing the precision or be `None` if the precision is not applicable
+///   or not specified.
 pub struct PromotionResult {
     pub dest_type: DataType,
     pub confidence: f32,
@@ -469,7 +639,26 @@ impl TypeLatticeResolver {
             datetime_precision,
         })
     }
-    // Byte array Detection
+
+    /// The function `detect_type_from_string` in calculates a confidence score based on the
+    /// likelihood of different data types for a given column.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `detect_type_from_string` returns a `Result` containing a floating-point number
+    /// (`f32`) representing the confidence level of the inferred data type based on the provided
+    /// statistics and destination data type.
     fn detect_type_from_string(
         &self,
         stats: &ColumnStats,
@@ -508,6 +697,19 @@ impl TypeLatticeResolver {
         Ok(confidence * logp)
     }
 
+    /// The function `decide` performs log-sum-exp normalization on log priors thus converting the priors to
+    /// probablities and selecting the most likely DataType. It required thresholds are not met then there is
+    /// no likely DataType
+    ///
+    /// Arguments:
+    ///
+    /// * `posteriors`: The `posteriors` parameter in the `detect_type_from_string` function represents a slice
+    ///   of resultant tuples of `DataType` and f32 confidence.
+    ///
+    /// Returns:
+    ///
+    /// The function `decide` returns a `Option` containing a tuple of DataType representing the destination type and a floating-point number
+    /// (`f32`) representing the confidence level in probable terms of the inferred data type.
     fn decide(&self, posteriors: &[(DataType, f32)]) -> Option<(DataType, f32)> {
         let mut sorted = posteriors.to_vec();
         sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -544,6 +746,22 @@ impl TypeLatticeResolver {
         }
     }
 
+    /// The function `uuid_likelihood` checks the likelihood of sample values in a column to
+    /// be parsed as UUID, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    ///
+    /// Returns:
+    ///
+    /// The function `uuid_likelihood` returns a `Result<f32, NisabaError>`. The possible return
+    /// values are `Ok` with a floating-point number representing the likelihood of the UUID format
+    /// being correct, or an `Err` containing a `NisabaError` if there was an issue during the execution
+    /// of the function.
     fn uuid_likelihood(&self, stats: &ColumnStats) -> Result<f32, NisabaError> {
         if stats.character_min_length < Some(32) || stats.character_max_length != Some(45) {
             return Ok(0.0);
@@ -575,6 +793,22 @@ impl TypeLatticeResolver {
         Ok(0.0)
     }
 
+    /// The function `array_likelihood` checks the likelihood of sample values in a column to
+    /// be parsed as list/array, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    ///
+    /// Returns:
+    ///
+    /// The function `array_likelihood` returns a `Result<f32, NisabaError>`. The possible return
+    /// values are `Ok` with a floating-point number representing the likelihood of the list/array format
+    /// being correct, or an `Err` containing a `NisabaError` if there was an issue during the execution
+    /// of the function.
     fn array_likelihood(&self, stats: &ColumnStats) -> Result<f32, NisabaError> {
         let values = stats
             .sample_values
@@ -603,6 +837,22 @@ impl TypeLatticeResolver {
         Ok(0.0)
     }
 
+    /// The function `json_likelihood` checks the likelihood of sample values in a column to
+    /// be parsed as JSON, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    ///
+    /// Returns:
+    ///
+    /// The function `json_likelihood` returns a `Result<f32, NisabaError>`. The possible return
+    /// values are `Ok` with a floating-point number representing the likelihood of the JSON format
+    /// being correct, or an `Err` containing a `NisabaError` if there was an issue during the execution
+    /// of the function.
     fn json_likelihood(&self, stats: &ColumnStats) -> Result<f32, NisabaError> {
         let values = stats
             .sample_values
@@ -626,6 +876,26 @@ impl TypeLatticeResolver {
         Ok(0.0)
     }
 
+    /// The function `datetime_likelihood` checks the likelihood of sample values in a column to
+    /// be parsed as specific date and time formats, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `datetime_likelihood` returns a `Result<f32, NisabaError>`. The possible return
+    /// values are `Ok` with a floating-point number representing the likelihood of the datetime format
+    /// being correct, or an `Err` containing a `NisabaError` if there was an issue during the execution
+    /// of the function.
     fn datetime_likelihood(
         &self,
         stats: &ColumnStats,
@@ -734,6 +1004,27 @@ impl TypeLatticeResolver {
         Ok(0.0)
     }
 
+    /// The function `detect_time_from_int` calculates a likelihood score for inferring
+    /// time-related data types based on statistical properties of the input data.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `detect_time_from_int` returns a floating-point number (`f32`) which represents the
+    /// likelihood of the given data type being a time-related data type based on various statistical
+    /// calculations and likelihood calculations performed within the function. The final result is the
+    /// product of the calculated likelihood and a confidence factor based on the null ratio of the
+    /// data.
     fn detect_time_from_int(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         let mut logp = match dest {
             DataType::Date32 => -2.12,
@@ -762,6 +1053,26 @@ impl TypeLatticeResolver {
         confidence * logp
     }
 
+    /// The function `epoch_likelihood` checks the likelihood of sample values in a column to
+    /// be parsed as epoch(time) from int64 values, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `epoch_likelihood` returns a `Result<f32, NisabaError>`. The possible return
+    /// values are `Ok` with a floating-point number representing the likelihood of the epoch(time) format
+    /// being correct, or an `Err` containing a `NisabaError` if there was an issue during the execution
+    /// of the function.
     fn epoch_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         // Destructing min and max to find out
         let (min, max) = match (stats.max_val, stats.max_val) {
@@ -809,6 +1120,23 @@ impl TypeLatticeResolver {
         if in_range { 1.2 } else { -2.0 }
     }
 
+    /// The function `span_likelihood` checks the likelihood of sample values in a column to
+    /// exist within the desired range differences, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `span_likelihood` returns a floating-point number as the log prior confidence.
     fn span_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         // Destructing min and max to find out
         let (min, max) = match (stats.max_val, stats.max_val) {
@@ -840,6 +1168,24 @@ impl TypeLatticeResolver {
         -((ratio.ln()).powi(2) as f32)
     }
 
+    /// The function calculates the coefficient of variation for quantile spacing consistency and
+    /// returns a likelihood score based on the data type.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `quantile_cv_likelihood` returns a `f32` value, which is either 0.6, -0.4, or 0.0
+    /// based on the conditions specified in the match statement for the `dest` parameter.
     fn quantile_cv_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         let q = match stats.quantiles_i32 {
             Some(q) => q,
@@ -878,6 +1224,24 @@ impl TypeLatticeResolver {
         }
     }
 
+    /// The function `delta_likelihood` checks the likelihood of sample values in a column to
+    /// exhibit a certain delta behavior when considering integer time or timestamps, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `delta_likelihood` returns a `f32` value, which is either 0.8, -0.4, 1, -0.5, or 0.0
+    /// based on the conditions specified in the match statement for the `dest` parameter.
     fn delta_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         let ds = match &stats.delta_stats {
             Some(d) => d,
@@ -911,6 +1275,26 @@ impl TypeLatticeResolver {
         }
     }
 
+    /// The function calculates the likelihood of entropy based on the type of data and its temporal
+    /// characteristics.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `modulo_entropy_likelihood` returns a `f32` value based on the conditions specified
+    /// in the code snippet. If the `dest` parameter matches one of the specified data types (`Date32`,
+    /// `Date64`, `Timestamp`, `Time32`, `Time64`), it will return either `1.2` or `-0.6` based on the
+    /// value of `h`.
     fn modulo_entropy_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         let h = match stats.temporal_mod_entropy {
             Some(h) => h,
@@ -937,6 +1321,27 @@ impl TypeLatticeResolver {
             _ => 0.0,
         }
     }
+
+    /// The function `entropy_likelihood` calculates the likelihood of entropy based on the destination
+    /// data type.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `entropy_likelihood` returns a `f32` value based on the conditions specified in the
+    /// match statement for the `dest` parameter. If the `dest` matches one of the specified data types
+    /// (`Date32`, `Date64`, `Timestamp`, `Time32`, `Time64`), it checks the entropy value in the
+    /// `stats` parameter. If the entropy is less than
     fn entropy_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         match dest {
             DataType::Date32
@@ -954,6 +1359,24 @@ impl TypeLatticeResolver {
         }
     }
 
+    /// This Rust function calculates the likelihood of delta regularity based on column statistics and
+    /// data type.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `delta_regularity_likelihood` returns a floating-point number (f32) representing
+    /// the likelihood of regularity based on the provided statistics and destination data type.
     fn delta_regularity_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         let ds = match &stats.delta_stats {
             Some(ds) => ds,
@@ -987,6 +1410,25 @@ impl TypeLatticeResolver {
         }
     }
 
+    /// The function `delta_scale_likelihood` checks the likelihood of sample values in a column to
+    /// exhibit a certain delta scale behavior when considering integer time or timestamps, returning a confidence score.
+    ///
+    /// Arguments:
+    ///
+    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
+    ///   to actual data and statistics of a column, such as the number of null values, unique values,
+    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    ///   profile.
+    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
+    ///   data type that you want to detect based on the input string and column statistics. It is of type
+    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
+    ///   `Date etc.
+    ///
+    /// Returns:
+    ///
+    /// The function `delta_likelihood` returns a `f32` value, which is the negated natural logarithm of
+    /// the ratio of median absolute value and expected value time scale based on the conditions
+    /// specified in the match statement for the `dest` parameter.
     fn delta_scale_likelihood(&self, stats: &ColumnStats, dest: &DataType) -> f32 {
         let ds = match &stats.delta_stats {
             Some(ds) => ds,
@@ -1043,6 +1485,20 @@ impl TypeLatticeResolver {
     }
 }
 
+/// The function `cast_utf8_column` casts a column in the mutable RecordBatch to the dest DataType
+///
+/// Arguments:
+///
+/// * `batch`: The `batch` parameter in the `cast_utf8_column` function represents a mutable reference
+///   to a RecordBatch.
+/// * `column_name`: The `column_name` parameter in the `cast_utf8_column` function represents the desired
+///   column in the RecordBatch that is the target of a cast.
+/// * `dest`: The `dest` parameter in the `cast_utf8_column` function represents the desired DataType the column
+///   will be cast to.
+///
+/// Returns:
+///
+/// The function `cast_utf8_column` returns a Result of unit value on success and NisabaError when not successful.
 pub fn cast_utf8_column(
     batch: &mut RecordBatch,
     column_name: &str,
@@ -1100,6 +1556,17 @@ pub fn cast_utf8_column(
 }
 
 // Casting Utf8 to FixedSizeBinary(16) - UUID
+
+/// The function `utf8_to_uuid` casts a column/array to UUID
+///
+/// Arguments:
+///
+/// * `array`: The `array` parameter in the `utf8_to_uuid` function represents a reference to
+///   an ArrowArray.
+///
+/// Returns:
+///
+/// The function `cast_utf8_column` returns a Result of ArrayRef after a successful cast and NisabaError when not successful.
 pub fn utf8_to_uuid(array: &ArrayRef) -> Result<ArrayRef, NisabaError> {
     let string_array =
         array

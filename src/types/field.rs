@@ -28,22 +28,39 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct FieldDef {
+    /// Global unique Id for the field
     pub id: Uuid,
+    /// Id of silo in which the field is member
     pub silo_id: String,
+    /// Name of the schema in which the field is member
     pub table_schema: String,
+    /// Name of the table in which the field is member
     pub table_name: String,
+    /// Name of the field
     pub name: String,
+    /// Arrow DataType of the field
     pub canonical_type: DataType,
+    /// Optional floating-point confidence in DataType of the field
     pub type_confidence: Option<f32>,
+    /// Optional floating-point measure of the uniquness/distinctness
     pub cardinality: Option<f32>,
+    /// Floating-point average of the length of String/Binary field
     pub avg_byte_length: Option<f32>,
+    /// Boolean flag if the field is sequential for integer/time/timestamp/date field
     pub is_monotonic: bool,
+    // Optional character class signature array of a String field
     pub char_class_signature: Option<[f32; 4]>, // [digit, alpha, whitespace, symbol]
+    // Optional String property for a default value for of a String field
     pub column_default: Option<String>,
+    // Boolean flag if the field allows null
     pub is_nullable: bool,
+    // Optional integer max length of characters of a String field
     pub char_max_length: Option<i32>,
+    // Optional integer precision of a floating-point field
     pub numeric_precision: Option<i32>,
+    // Optional integer scale of a floating-point field
     pub numeric_scale: Option<i32>,
+    // Optional integer precision of a datetime field
     pub datetime_precision: Option<i32>,
 }
 
@@ -106,6 +123,15 @@ impl std::fmt::Display for FieldDef {
 }
 
 impl FieldDef {
+    /// The function `enrich_from_arrow` updates certain fields of a struct based on the provided
+    /// `FieldMetrics` if it is not None.
+    ///
+    /// Arguments:
+    ///
+    /// * `metrics`: The `enrich_from_arrow` function takes in an optional reference to `FieldMetrics`
+    ///   struct as the `metrics` parameter. If the `metrics` parameter is `Some`, the function will
+    ///   update certain fields of the struct it is called on based on the values in the `FieldMetrics`
+    ///   struct
     pub fn enrich_from_arrow(&mut self, metrics: Option<&FieldMetrics>) {
         if let Some(m) = metrics {
             self.char_class_signature = Some(m.char_class_signature);
@@ -115,6 +141,13 @@ impl FieldDef {
         }
     }
 
+    /// The `write_field_def_paragraph` function generates a detailed description of a field's
+    /// properties such as type, cardinality, nullability, default value, size constraints, numeric
+    /// precision, and datetime precision.
+    ///
+    /// Arguments:
+    ///
+    /// * `out`: The `out` parameter is a mutable reference to a `String` where the generated paragraph will be written into.
     pub fn write_field_def_paragraph(&self, out: &mut String) {
         let base = 256;
         let extra = self.column_default.as_ref().map_or(0, |s| s.len() + 40)
@@ -213,6 +246,14 @@ impl FieldDef {
         self.write_char_class(out);
     }
 
+    /// The function `write_type_sentence` writes a sentence describing the type of data based
+    /// on certain conditions and data types.
+    ///
+    /// Arguments:
+    ///
+    /// * `out`: The `write_type_sentence` function takes a mutable reference to a `String` named `out`
+    ///   as a parameter. This function is responsible for constructing a sentence describing the type of
+    ///   data based on certain conditions and appending it to the provided `out` string.
     fn write_type_sentence(&self, out: &mut String) {
         let hedge = match self.type_confidence {
             Some(c) if c > 0.91 => "It is ",
@@ -311,6 +352,14 @@ impl FieldDef {
         }
     }
 
+    /// The function `write_cardinality` analyzes the cardinality of a field's values and provides a
+    /// description based on the uniqueness level.
+    ///
+    /// Arguments:
+    ///
+    /// * `out`: The `write_cardinality` function takes a mutable reference to a `String` named `out` as
+    ///   a parameter. This function checks the cardinality of a field and appends a message describing
+    ///   the cardinality to the `out` string based on the cardinality value.
     fn write_cardinality(&self, out: &mut String) {
         if let Some(cardinality) = self.cardinality {
             if cardinality > 0.95 {
@@ -323,6 +372,15 @@ impl FieldDef {
         }
     }
 
+    /// The function `write_char_class` analyzes the character composition of values and provides
+    /// insights based on the predominant characters present.
+    ///
+    /// Arguments:
+    ///
+    /// * `out`: The `out` parameter in the `write_char_class` function is a mutable reference to a
+    ///   `String` where the messages about the character class will be appended. This function analyzes
+    ///   the character class signature and appends a message to the `out` string based on the
+    ///   characteristics of the character class.
     fn write_char_class(&self, out: &mut String) {
         const DIGIT: usize = 0;
         const ALPHA: usize = 1;
@@ -641,6 +699,22 @@ impl Storable for FieldDef {
         Ok(batch)
     }
 
+    /// The function `from_record_batches` processes a vector of `RecordBatch` instances to extract and
+    /// transform data into a specific data structure, handling various data types and error cases along
+    /// the way.
+    ///
+    /// Arguments:
+    ///
+    /// * `batches`: The `from_record_batches` function takes a vector of `RecordBatch` instances as
+    ///   input. Each `RecordBatch` contains columns of data where each column represents a specific field
+    ///   or attribute of the records.
+    ///
+    /// Returns:
+    ///
+    /// The function `from_record_batches` returns a `Result` containing a vector of `FieldMatch`
+    /// structs, which represent the schema information extracted from the input `RecordBatch`
+    /// instances. The `FieldMatch` struct contains a `FieldDef` struct representing the schema details
+    /// of a field/column and a confidence value associated with that schema.
     fn from_record_batches(
         batches: Vec<RecordBatch>,
     ) -> Result<Vec<Self::SearchResult>, NisabaError> {

@@ -28,14 +28,17 @@ impl std::fmt::Display for StorageBackend {
 }
 
 impl StorageBackend {
+    /// The function checks to confirm if a Backend is file-based
     pub fn is_file_based(&self) -> bool {
         matches!(self, Self::Csv | Self::Excel | Self::Parquet | Self::SQLite)
     }
 
+    /// The function checks if a backend is network-based
     pub fn is_network_based(&self) -> bool {
         matches!(self, Self::MongoDB | Self::MySQL | Self::PostgreSQL)
     }
 
+    /// The function returns fields important of file-based or network-based backend
     pub fn required_fields(&self) -> Vec<&'static str> {
         match self {
             Self::Csv | Self::Excel | Self::Parquet | Self::SQLite => vec!["dir_path"],
@@ -45,12 +48,14 @@ impl StorageBackend {
         }
     }
 
+    /// The function checks on that PostgreSQL only allows namespace use
     pub fn supports_namespace(&self) -> bool {
         matches!(self, Self::PostgreSQL)
     }
 }
 
 #[derive(Clone, Debug)]
+/// The `StorageConfig` sets out connection details to a store
 pub struct StorageConfig {
     pub backend: StorageBackend,
     pub dir_path: Option<String>,
@@ -65,6 +70,19 @@ pub struct StorageConfig {
 }
 
 impl StorageConfig {
+    /// The `new_file_backed` creates a `StorageConfig` with necessary
+    /// validations for a file-based backend
+    ///
+    /// Arguments:
+    ///
+    /// * `backend`: The `backend` parameter  takes a StorageBackend variant
+    ///
+    /// * `dir_path`: The `dir_path` takes value that can be converted to String
+    ///   pointing to the location/directory of the files.
+    ///
+    /// Returns:
+    ///
+    /// A Result of StorageConfig on success or NisabaError if validation fails.
     pub fn new_file_backend(
         backend: StorageBackend,
         dir_path: impl Into<String>,
@@ -92,6 +110,34 @@ impl StorageConfig {
         })
     }
 
+    /// The `new_network_backed` creates a `StorageConfig` with necessary
+    /// validations for a network-based backend
+    ///
+    /// Arguments:
+    ///
+    /// * `backend`: The `backend` parameter  takes a StorageBackend variant
+    ///
+    /// * `host`: The `host` takes value pointint to the IP of the server
+    ///   where the store is resident.
+    ///
+    /// * `port`: The `port` parameter takes a u16 to give specific access to
+    ///   the desired store.
+    ///
+    /// * `database`: The `database` parameter takes a value that can be String to
+    ///   indicate the identity/name of the physical/logical instance.
+    ///
+    /// * `username`: The `username` parameter takes a value that can be String as identity to
+    ///   user allowed to access the storage backend.
+    ///
+    /// * `password`: The `password` parameter takes a value that can be String as secret
+    ///   key to access the the storage backend
+    ///
+    /// * `namespace`: The `namespace` parameter takes and optional value that can be String
+    ///   to point to specific Schema/Grouping tables
+    ///
+    /// Returns:
+    ///
+    /// A Result of StorageConfig on success or NisabaError if validation fails.
     pub fn new_network_backend(
         backend: StorageBackend,
         host: impl Into<String>,
@@ -142,6 +188,26 @@ impl StorageConfig {
         })
     }
 
+    /// The `new_mongo_srv_backed` creates a `StorageConfig` with necessary
+    /// validations for an SRV configured MongoDB
+    ///
+    /// Arguments:
+    ///
+    /// * `host`: The `host` takes value pointint to the IP of the server
+    ///   where the store is resident.
+    ///
+    /// * `database`: The `database` parameter takes a value that can be String to
+    ///   indicate the identity/name of the physical/logical instance.
+    ///
+    /// * `username`: The `username` parameter takes a value that can be String as identity to
+    ///   user allowed to access the storage backend.
+    ///
+    /// * `password`: The `password` parameter takes a value that can be String as secret
+    ///   key to access the the storage backend
+    ///
+    /// Returns:
+    ///
+    /// A Result of StorageConfig on success or NisabaError if validation fails.
     pub fn new_mongo_srv_backend(
         host: impl Into<String>,
         database: impl Into<String>,
@@ -170,6 +236,11 @@ impl StorageConfig {
         })
     }
 
+    /// The `connection_string` function creates a full string for access
+    ///
+    /// Returns:
+    ///
+    /// A Result of String on success or NisabaError if a required detail is missing.
     pub fn connection_string(&self) -> Result<String, NisabaError> {
         self.validate()?;
 
@@ -262,6 +333,11 @@ impl StorageConfig {
         }
     }
 
+    /// The `validate` function runs necessary validations
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     pub fn validate(&self) -> Result<(), NisabaError> {
         match self.backend {
             StorageBackend::Csv
@@ -274,6 +350,11 @@ impl StorageConfig {
         }
     }
 
+    /// The `validate_file_based_config` function runs specific validations on file-based configs
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_file_based_config(&self) -> Result<(), NisabaError> {
         match &self.dir_path {
             Some(path) => Self::validate_path(path),
@@ -284,6 +365,11 @@ impl StorageConfig {
         }
     }
 
+    /// The `validate_network_based_config` function runs specific validations on network-based configs
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_network_based_config(&self) -> Result<(), NisabaError> {
         let host = self.host.as_ref().ok_or(NisabaError::Missing(format!(
             "Host required for {}",
@@ -326,6 +412,11 @@ impl StorageConfig {
         Ok(())
     }
 
+    /// The `validate_path` function runs specific validations on the path provided for file-based backend
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_path(path: &str) -> Result<(), NisabaError> {
         if path.trim().is_empty() {
             return Err(NisabaError::Missing("Path cannot be empty".into()));
@@ -339,6 +430,11 @@ impl StorageConfig {
         Ok(())
     }
 
+    /// The `validate_host` function runs specific validations on host for network-nased backend
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_host(host: &str) -> Result<(), NisabaError> {
         if host.trim().is_empty() {
             return Err(NisabaError::Missing("Host cannot be empty".into()));
@@ -352,7 +448,11 @@ impl StorageConfig {
 
         Ok(())
     }
-
+    /// The `validate_port` function runs specific validations on port for network-nased backend
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_port(port: u16) -> Result<(), NisabaError> {
         if port == 0 {
             return Err(NisabaError::Invalid("Port cannot be 0".into()));
@@ -360,6 +460,11 @@ impl StorageConfig {
         Ok(())
     }
 
+    /// The `validate_database_name` function runs specific validations on database_name for network-nased backend
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_database_name(database: &str) -> Result<(), NisabaError> {
         if database.trim().is_empty() {
             return Err(NisabaError::Missing("Database name cannot be empty".into()));
@@ -374,6 +479,11 @@ impl StorageConfig {
         Ok(())
     }
 
+    /// The `validate_namespace` function runs specific validations on host for PostgreSQL
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_namespace(namespace: &str) -> Result<(), NisabaError> {
         if namespace.contains(|c: char| c.is_whitespace() || c == '@' || c == '/' || c == '\\') {
             return Err(NisabaError::Invalid(
@@ -383,6 +493,11 @@ impl StorageConfig {
         Ok(())
     }
 
+    /// The `validate_credentials` function runs specific validations on credentials for network-nased backend
+    ///
+    /// Returns:
+    ///
+    /// A Result of unit on success or NisabaError if validation fails.
     fn validate_credentials(username: &str, password: &str) -> Result<(), NisabaError> {
         if username.trim().is_empty() {
             return Err(NisabaError::Missing("Username cannot be empty".into()));
@@ -395,6 +510,11 @@ impl StorageConfig {
         Ok(())
     }
 
+    /// The `url_encode` function encodes a connection string to url safe
+    ///
+    /// Returns:
+    ///
+    /// A String result of encoded connection string.
     fn url_encode(input: &str) -> String {
         input
             .chars()
