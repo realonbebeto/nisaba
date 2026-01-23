@@ -49,6 +49,7 @@ pub fn get_field_defs() -> Vec<Field> {
     vec![
         Field::new("id", DataType::FixedSizeBinary(16), false),
         Field::new("silo_id", DataType::Utf8, false),
+        Field::new("table_schema", DataType::Utf8, false),
         Field::new("table_name", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
         Field::new("canonical_type", DataType::Utf8, false),

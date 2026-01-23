@@ -373,6 +373,7 @@ fn build_fields_array(
     let mut ids = Vec::with_capacity(capacity * 16);
 
     let mut silo_ids = Vec::with_capacity(capacity);
+    let mut table_schemas = Vec::with_capacity(capacity);
     let mut table_names = Vec::with_capacity(capacity);
     let mut names = Vec::with_capacity(capacity);
     let mut canonical_types = Vec::with_capacity(capacity);
@@ -426,6 +427,7 @@ fn build_fields_array(
         for field in &scheme.fields {
             ids.push(field.id.into_bytes());
             silo_ids.push(field.silo_id.clone());
+            table_schemas.push(field.table_schema.clone());
             table_names.push(field.table_name.clone());
             names.push(field.name.clone());
             canonical_types.push(field.canonical_type.to_string());
@@ -482,6 +484,7 @@ fn build_fields_array(
     // Build arrays from collected data
     let ids_array = FixedSizeBinaryArray::try_from_iter(ids.iter())?;
     let silo_id_array = StringArray::from(silo_ids);
+    let table_schema_array = StringArray::from(table_schemas);
     let table_name_array = StringArray::from(table_names);
     let name_array = StringArray::from(names);
     let canonical_type_array = StringArray::from(canonical_types);
@@ -534,6 +537,7 @@ fn build_fields_array(
         vec![
             Arc::new(ids_array),
             Arc::new(silo_id_array),
+            Arc::new(table_schema_array),
             Arc::new(table_name_array),
             Arc::new(name_array),
             Arc::new(canonical_type_array),
