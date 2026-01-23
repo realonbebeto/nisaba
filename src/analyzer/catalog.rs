@@ -4,12 +4,19 @@ use crate::error::NisabaError;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum StorageBackend {
+    /// Flat file csvs in a directory
     Csv,
+    /// Excel worksheets, workbooks
     Excel,
+    /// SRV or Non-SRV
     MongoDB,
+    /// MySQL store
     MySQL,
+    /// Flat file parquet in a directory
     Parquet,
+    /// Postgres store
     PostgreSQL,
+    /// FLat file sql db path
     SQLite,
 }
 
