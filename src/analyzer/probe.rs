@@ -277,7 +277,7 @@ pub struct SchemaAnalyzerBuilder {
     pub(crate) name: String,
     pub(crate) config: AnalyzerConfig,
     pub(crate) inference_registry: InferenceEngineRegistry,
-    pub(crate) latent_store: Arc<LatentStore>,
+    pub(crate) latent_store: LatentStore,
 }
 
 impl std::fmt::Debug for SchemaAnalyzerBuilder {
@@ -297,7 +297,7 @@ impl Default for SchemaAnalyzerBuilder {
             name: "default".to_string(),
             config: AnalyzerConfig::default(),
             inference_registry: InferenceEngineRegistry::new(),
-            latent_store: Arc::new(ls),
+            latent_store: ls,
         }
     }
 }
@@ -342,6 +342,40 @@ impl SchemaAnalyzerBuilder {
         self
     }
 
+    /// The `with_inference_registry` function sets the inference registry store and returns the
+    /// modified object.
+    ///
+    /// Arguments:
+    ///
+    /// * `registry`: The `registry` parameter is of type `InferenceEngineRegistry`. It
+    ///   is used to set the store for the inference engines by passing an instance of `InferenceEngineRegistry` to
+    ///   the function.
+    ///
+    /// Returns:
+    ///
+    /// The `self` object is being returned after updating the store with the provided instance
+    pub fn with_inference_registry(mut self, registry: InferenceEngineRegistry) -> Self {
+        self.inference_registry = registry;
+        self
+    }
+
+    /// The `with_latent_store` function sets the latent store and returns the
+    /// modified object.
+    ///
+    /// Arguments:
+    ///
+    /// * `latent_store`: The `latent_store` parameter is of type `LatentStore`. It
+    ///   is used to set the vector store by passing an instance of `LatentStore` to
+    ///   the function.
+    ///
+    /// Returns:
+    ///
+    /// The `self` object is being returned after updating the vector store with the provided instance
+    pub fn with_latent_store(mut self, latent_store: LatentStore) -> Self {
+        self.latent_store = latent_store;
+        self
+    }
+
     /// The function `build` constructs a `SchemaAnalyzer` instance with specified weights and
     /// properties. The weights provided MUST add to 1.0.
     ///
@@ -371,7 +405,7 @@ impl SchemaAnalyzerBuilder {
             name: self.name,
             config: Arc::new(config),
             inference_engine: self.inference_registry,
-            latent_store: self.latent_store,
+            latent_store: Arc::new(self.latent_store),
         }
     }
 }
