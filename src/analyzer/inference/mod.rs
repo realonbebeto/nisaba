@@ -355,7 +355,7 @@ fn sql_to_arrow_type(
                 Ok(DataType::Time32(TimeUnit::Microsecond))
             }
         }
-
+        "datetime" => Ok(DataType::Timestamp(TimeUnit::Second, None)),
         "timestamp" | "timestamptz" => {
             if let Some(p) = datetime_precision {
                 match p {
