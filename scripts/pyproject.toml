@@ -1,0 +1,15 @@
+[project]
+name = "scripts"
+version = "0.1.0"
+description = "seeding scripts"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mysql-connector-python>=9.5.0",
+    "pandas>=3.0.0",
+    "psycopg2-binary>=2.9.11",
+    "pyarrow>=23.0.0",
+    "pymongo>=4.16.0",
+    "sqlalchemy>=2.0.46",
+    "xlsxwriter>=3.2.9",
+]
