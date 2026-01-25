@@ -24,7 +24,7 @@ use arrow::{
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use uuid::Uuid;
 
@@ -38,10 +38,21 @@ pub use nosql::NoSQLInferenceEngine;
 pub use sql::SQLInferenceEngine;
 
 use crate::{
-    analyzer::catalog::{StorageBackend, StorageConfig},
+    analyzer::{
+        catalog::{StorageBackend, StorageConfig},
+        inference::promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
+    },
     error::NisabaError,
     types::{FieldDef, TableDef},
 };
+
+#[derive(Debug, Default)]
+pub struct InferenceStats {
+    pub tables_processed: usize,
+    pub tables_inferred: usize,
+    pub fields_inferred: usize,
+    pub errors: Vec<String>,
+}
 
 // =================================================
 // Inference Engine Registry
@@ -58,8 +69,10 @@ use crate::{
 /// * `engines`: The `engines` property in `InferenceEngineRegistry` is a HashMap that stores
 ///   a mapping between strings (keys) and boxed trait objects that implement the `SchemaInferenceEngine`
 ///   trait.
+///
 pub struct InferenceEngineRegistry {
     engines: HashMap<String, Box<dyn SchemaInferenceEngine>>,
+    infer_stats: Arc<Mutex<InferenceStats>>,
 }
 
 impl Default for InferenceEngineRegistry {
@@ -85,7 +98,12 @@ impl Default for InferenceEngineRegistry {
             Box::new(nosql_engine),
         );
 
-        Self { engines }
+        let infer_stats = Arc::new(Mutex::new(InferenceStats::default()));
+
+        Self {
+            engines,
+            infer_stats,
+        }
     }
 }
 
@@ -128,42 +146,35 @@ impl InferenceEngineRegistry {
             .map(|eng| eng.as_ref())
     }
 
-    /// The `infer_schema` function infers table schemas based on the data location using the
-    /// specified engine.
+    /// The `discover_ecosystem` function infers table schemas based on the data locations using the
+    /// matched engine.
     ///
     /// Arguments:
     ///
-    /// * `location`: The `location` parameter in the `infer_schema` function represents the location of
-    ///   the data from which you want to infer the schema.
+    /// * `config`: The `config` parameter represents the locations of the data from which you want to infer the schemas.
     ///
     /// Returns:
     ///
-    /// A Result containing a vector of TableSchema objects or an NisabaError if there is an issue with the
+    /// A Result containing a vector of TableDef or an NisabaError if there is an issue with the
     /// operation.
-    pub fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
-        let engine = self.get_engine(&config.backend).ok_or_else(|| {
-            NisabaError::Unsupported(format!(
-                "No engine available for store type: {:?}",
-                config.backend
-            ))
-        })?;
-
-        let table_defs = engine.infer_schema(config)?;
-
-        Ok(table_defs)
-    }
-
     pub fn discover_ecosystem(
         &self,
         configs: Vec<StorageConfig>,
     ) -> Result<Vec<TableDef>, NisabaError> {
-        let mut table_defs = Vec::new();
+        let mut table_reps = Vec::new();
 
         for config in configs {
-            table_defs.extend(self.infer_schema(&config)?);
+            let engine = self.get_engine(&config.backend).ok_or_else(|| {
+                NisabaError::Unsupported(format!(
+                    "No engine available for store type: {:?}",
+                    config.backend
+                ))
+            })?;
+            let reps = engine.infer_schema(&config)?;
+            table_reps.extend(reps);
         }
 
-        Ok(table_defs)
+        Ok(table_reps)
     }
 }
 
@@ -177,6 +188,62 @@ pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
 
     /// Get the name of the inference engine
     fn engine_name(&self) -> &str;
+
+    fn enrich_table_def(
+        &self,
+        table_def: &mut TableDef,
+        batch: &mut RecordBatch,
+    ) -> Result<(), NisabaError> {
+        let schema = batch.schema();
+
+        let resolver = TypeLatticeResolver::new();
+
+        for (index, field) in schema.fields().iter().enumerate() {
+            let column = batch.column(index);
+
+            match column.data_type() {
+                DataType::LargeUtf8 | DataType::Utf8 | DataType::Int32 | DataType::Int64 => {
+                    let stats = ColumnStats::new(column);
+                    let resolved_result = resolver.promote(column.data_type(), &stats)?;
+
+                    if let Some(ff) = table_def
+                        .fields
+                        .iter_mut()
+                        .find(|f| f.name == *field.name())
+                    {
+                        ff.type_confidence = Some(resolved_result.confidence);
+
+                        // Update char_max_length
+                        match (&ff.canonical_type, &resolved_result.dest_type) {
+                            (DataType::Utf8, DataType::Utf8)
+                            | (DataType::LargeUtf8, DataType::LargeUtf8)
+                            | (DataType::Utf8View, DataType::Utf8View) => {
+                                ff.char_max_length = resolved_result.character_maximum_length;
+                            }
+
+                            (_, _) => {}
+                        }
+
+                        // Update type related signals when there is a mismatch on types
+                        if ff.canonical_type != resolved_result.dest_type {
+                            ff.canonical_type = resolved_result.dest_type;
+                            ff.type_confidence = Some(resolved_result.confidence);
+                            ff.is_nullable = resolved_result.nullable;
+                            ff.char_max_length = resolved_result.character_maximum_length;
+                            ff.numeric_precision = resolved_result.numeric_precision;
+                            ff.numeric_scale = resolved_result.numeric_scale;
+                            ff.datetime_precision = resolved_result.datetime_precision;
+
+                            // Very important for field values in batch to be updated
+                            cast_utf8_column(batch, &ff.name, &ff.canonical_type)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]
