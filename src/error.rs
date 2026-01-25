@@ -3,6 +3,8 @@ pub enum NisabaError {
     // Schema & Type
     #[error("Unsupported: {0}")]
     Unsupported(String),
+    #[error("No TableDef Generated")]
+    NoTableDefGenerated,
 
     // Resources
     #[error("Invalid: {0}")]
