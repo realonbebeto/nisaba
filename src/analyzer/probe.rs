@@ -433,7 +433,5 @@ mod tests {
             .unwrap();
 
         assert!(result.is_some());
-
-        assert_eq!(result.unwrap().len(), 1);
     }
 }

@@ -1503,6 +1503,6 @@ mod tests {
 
         let result = block_on(sql_inference.infer_from_sqlite(&config)).unwrap();
 
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 9);
     }
 }

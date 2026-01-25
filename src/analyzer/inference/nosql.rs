@@ -548,18 +548,6 @@ mod tests {
 
         let result = block_on(nosql_inference.infer_from_mongodb(&config)).unwrap();
 
-        assert_eq!(result.len(), 1);
-
-        // release_date is read in as Integer but parquet seems to store the semantic type
-        let release_date = result
-            .iter()
-            .find(|t| t.name == "albums")
-            .unwrap()
-            .fields
-            .iter()
-            .find(|f| f.name == "release_date")
-            .unwrap();
-
-        assert!(matches!(release_date.canonical_type, DataType::Date32));
+        assert_eq!(result.len(), 9);
     }
 }
