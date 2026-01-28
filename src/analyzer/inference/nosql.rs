@@ -5,7 +5,7 @@ use arrow::{
     },
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
 };
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::TryStreamExt;
 use mongodb::{
     Client,
     bson::{Bson, Document, doc},
@@ -92,92 +92,46 @@ impl NoSQLInferenceEngine {
         let db = client.database(&db_name);
         let collections = db.list_collection_names().await?;
 
-        // let mut table_reps_results: Vec<Result<TableRep, NisabaError>> = Vec::new();
+        let mut table_reps_results: Vec<Result<TableRep, NisabaError>> = Vec::new();
 
-        let table_reps_results: Vec<Result<TableRep, NisabaError>> = stream::iter(collections)
-            .map(|collection_name| {
-                let shared_db = db.clone();
-                let db_name = db_name.clone();
-                let silo_id = silo_id.clone();
-                let infer_stats = infer_stats.clone();
-                let on_table = on_table.clone();
+        for collection_name in collections {
+            let result = async {
+                let collection = db.collection::<Document>(&collection_name);
+                let cursor = collection
+                    .find(doc! {})
+                    .limit(self.sample_size as i64)
+                    .await?;
 
-                async move {
-                    let collection = shared_db.collection::<Document>(&collection_name);
-                    let cursor = collection
-                        .find(doc! {})
-                        .limit(self.sample_size as i64)
-                        .await?;
+                let docs: Vec<Document> = cursor.try_collect().await?;
 
-                    let docs: Vec<Document> = cursor.try_collect().await?;
+                let (result, schema) =
+                    self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
 
-                    let (result, schema) =
-                        self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
+                let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
 
-                    let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
+                let table_def = convert_into_table_defs(result)?;
 
-                    let table_def = convert_into_table_defs(result)?;
-
-                    {
-                        let mut stats = infer_stats.lock().await;
-                        stats.tables_processed += table_def.len();
-                    }
-
-                    let mut table_def = table_def
-                        .into_iter()
-                        .next()
-                        .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
-
-                    // Promotion
-                    self.enrich_table_def(&mut table_def, &mut batch)?;
-
-                    on_table(vec![table_def.clone()]).await?;
-
-                    Ok::<TableRep, NisabaError>((&table_def).into())
+                {
+                    let mut stats = infer_stats.lock().await;
+                    stats.tables_processed += table_def.len();
                 }
-            })
-            .buffer_unordered(4)
-            .collect()
+
+                let mut table_def = table_def
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
+
+                // Promotion
+                self.enrich_table_def(&mut table_def, &mut batch)?;
+
+                on_table(vec![table_def.clone()]).await?;
+
+                Ok::<TableRep, NisabaError>((&table_def).into())
+            }
             .await;
 
-        // for collection_name in collections {
-        //     let result = async {
-        //         let collection = db.collection::<Document>(&collection_name);
-        //         let cursor = collection
-        //             .find(doc! {})
-        //             .limit(self.sample_size as i64)
-        //             .await?;
-
-        //         let docs: Vec<Document> = cursor.try_collect().await?;
-
-        //         let (result, schema) =
-        //             self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
-
-        //         let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
-
-        //         let table_def = convert_into_table_defs(result)?;
-
-        //         {
-        //             let mut stats = infer_stats.lock().unwrap();
-        //             stats.tables_processed += table_def.len();
-        //         }
-
-        //         let mut table_def = table_def
-        //             .into_iter()
-        //             .next()
-        //             .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
-
-        //         // Promotion
-        //         self.enrich_table_def(&mut table_def, &mut batch)?;
-
-        //         on_table(vec![table_def.clone()]).await?;
-
-        //         Ok::<TableRep, NisabaError>((&table_def).into())
-        //     }
-        //     .await;
-
-        //     table_reps_results.push(result);
-        // }
+            table_reps_results.push(result);
+        }
 
         let mut errors = Vec::new();
         let mut table_reps = Vec::new();
