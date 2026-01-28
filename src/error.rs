@@ -5,6 +5,8 @@ pub enum NisabaError {
     Unsupported(String),
     #[error("No TableDef Generated")]
     NoTableDefGenerated,
+    #[error("No RecordBatch")]
+    NoRecordBatch,
 
     // Resources
     #[error("Invalid: {0}")]
