@@ -10,9 +10,10 @@
 
 use arrow::{
     array::{
-        Array, AsArray, Date32Array, Date64Array, FixedSizeBinaryArray, GenericStringArray,
-        Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray,
-        RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        Array, AsArray, BooleanBuilder, Date32Array, Date64Array, FixedSizeBinaryArray,
+        Float64Array, GenericStringArray, Int8Array, Int16Array, Int32Array, Int64Array,
+        Int64Builder, LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, UInt8Array,
+        UInt16Array, UInt32Array, UInt64Array,
     },
     datatypes::{
         DataType, Field, Int16Type, Int32Type, Int64Type, Schema, TimeUnit,
@@ -24,7 +25,7 @@ use arrow::{
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use uuid::Uuid;
 
@@ -33,156 +34,21 @@ mod nosql;
 mod promote;
 mod sql;
 
-pub use file::FileInferenceEngine;
+pub use file::{CsvInferenceEngine, ExcelInferenceEngine, ParquetInferenceEngine};
 pub use nosql::NoSQLInferenceEngine;
-pub use sql::SQLInferenceEngine;
+pub use sql::{MySQLInferenceEngine, PostgreSQLInferenceEngine, SqliteInferenceEngine};
 
 use crate::{
     analyzer::{
-        catalog::{StorageBackend, StorageConfig},
+        catalog::StorageBackend,
         inference::promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
     },
     error::NisabaError,
     types::{FieldDef, TableDef},
 };
 
-#[derive(Debug, Default)]
-pub struct InferenceStats {
-    pub tables_processed: usize,
-    pub tables_inferred: usize,
-    pub fields_inferred: usize,
-    pub errors: Vec<String>,
-}
-
-// =================================================
-// Inference Engine Registry
-// =================================================
-/// Registry of available inference engines
-///
-#[allow(dead_code)]
-#[derive(Debug)]
-/// The `InferenceEngineRegistry` contains a HashMap of engine names to boxed trait
-/// objects implementing the `SchemaInferenceEngine` trait.
-///
-/// Properties:
-///
-/// * `engines`: The `engines` property in `InferenceEngineRegistry` is a HashMap that stores
-///   a mapping between strings (keys) and boxed trait objects that implement the `SchemaInferenceEngine`
-///   trait.
-///
-pub struct InferenceEngineRegistry {
-    engines: HashMap<String, Box<dyn SchemaInferenceEngine>>,
-    infer_stats: Arc<Mutex<InferenceStats>>,
-}
-
-impl Default for InferenceEngineRegistry {
-    fn default() -> Self {
-        let file_engine = FileInferenceEngine::new();
-        let sql_engine = SQLInferenceEngine::new();
-        let nosql_engine = NoSQLInferenceEngine::new();
-
-        let mut engines: HashMap<String, Box<dyn SchemaInferenceEngine>> = HashMap::new();
-
-        engines.insert(
-            file_engine.engine_name().to_lowercase(),
-            Box::new(file_engine),
-        );
-
-        engines.insert(
-            sql_engine.engine_name().to_lowercase(),
-            Box::new(sql_engine),
-        );
-
-        engines.insert(
-            nosql_engine.engine_name().to_lowercase(),
-            Box::new(nosql_engine),
-        );
-
-        let infer_stats = Arc::new(Mutex::new(InferenceStats::default()));
-
-        Self {
-            engines,
-            infer_stats,
-        }
-    }
-}
-
-impl InferenceEngineRegistry {
-    pub fn new() -> Self {
-        InferenceEngineRegistry::default()
-    }
-
-    pub fn size(&self) -> usize {
-        self.engines.len()
-    }
-
-    /// The function `add_engine` adds a schema inference engine to a collection based on its engine
-    /// name. Can be used to replace an existing engine
-    ///
-    /// Arguments:
-    ///
-    /// * `engine`: The `engine` parameter is a `Box` containing a trait object of type `SchemaInferenceEngine`.
-    pub fn add_engine(&mut self, engine: Box<dyn SchemaInferenceEngine>) {
-        self.engines
-            .insert(engine.engine_name().to_lowercase(), engine);
-    }
-
-    /// The function `get_engine` returns an optional reference to a `SchemaInferenceEngine` based on
-    /// the provided `DataStoreType`.
-    ///
-    /// Arguments:
-    ///
-    /// * `store_type`: The `store_type` parameter is a reference to a `DataStoreType` enum that is used
-    ///   to identify the type of data store for which you want to retrieve the schema inference engine.
-    ///
-    /// Returns:
-    ///
-    /// The `get_engine` function returns an `Option` containing a reference to a `dyn
-    /// SchemaInferenceEngine` trait object based on the provided `DataStoreType`.
-    pub fn get_engine(&self, backend: &StorageBackend) -> Option<&dyn SchemaInferenceEngine> {
-        self.engines
-            .values()
-            .find(|eng| eng.can_handle(backend))
-            .map(|eng| eng.as_ref())
-    }
-
-    /// The `discover_ecosystem` function infers table schemas based on the data locations using the
-    /// matched engine.
-    ///
-    /// Arguments:
-    ///
-    /// * `config`: The `config` parameter represents the locations of the data from which you want to infer the schemas.
-    ///
-    /// Returns:
-    ///
-    /// A Result containing a vector of TableDef or an NisabaError if there is an issue with the
-    /// operation.
-    pub fn discover_ecosystem(
-        &self,
-        configs: Vec<StorageConfig>,
-    ) -> Result<Vec<TableDef>, NisabaError> {
-        let mut table_reps = Vec::new();
-
-        for config in configs {
-            let engine = self.get_engine(&config.backend).ok_or_else(|| {
-                NisabaError::Unsupported(format!(
-                    "No engine available for store type: {:?}",
-                    config.backend
-                ))
-            })?;
-            let reps = engine.infer_schema(&config)?;
-            table_reps.extend(reps);
-        }
-
-        Ok(table_reps)
-    }
-}
-
 /// Trait for schema inference engines
 pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
-    /// Infer schema from a data source
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError>;
-
     /// Check if this engine can handle the given data source
     fn can_handle(&self, backend: &StorageBackend) -> bool;
 
@@ -194,16 +60,84 @@ pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
         table_def: &mut TableDef,
         batch: &mut RecordBatch,
     ) -> Result<(), NisabaError> {
+        // Enriching
+        // 1. Type promotion and type confidence
+        // 2. cardinality
+        // 3. avg_byte_length
+        // 4. is_monotonic
+        // 5. char_class_signature
+        // 6. char_max_length
+        // 7. numeric_precision
+        // 8. numeric_scale
+        // 9. datetime_precision
+
         let schema = batch.schema();
 
         let resolver = TypeLatticeResolver::new();
 
         for (index, field) in schema.fields().iter().enumerate() {
-            let column = batch.column(index);
+            let mut column = batch.column(index).clone();
+
+            if self.engine_name() == "sqlite" {
+                // Handling Boolean/Int64 from f64 for SQLite
+                if column.data_type() == &DataType::Float64 {
+                    let arr = column.as_any().downcast_ref::<Float64Array>().ok_or(
+                        ArrowError::CastError("Failed to cast to Float64Array".into()),
+                    )?;
+
+                    if arr
+                        .iter()
+                        .flatten()
+                        .collect::<Vec<f64>>()
+                        .iter()
+                        .all(|val| val.is_finite() && (*val == 0.0 || *val == 1.0))
+                    {
+                        let mut builder = BooleanBuilder::new();
+                        for index in 0..arr.len() {
+                            if arr.is_null(index) {
+                                builder.append_null();
+                            } else {
+                                builder.append_value(arr.value(index) != 0.0);
+                            }
+                        }
+                        column = Arc::new(builder.finish());
+                    } else if arr
+                        .iter()
+                        .flatten()
+                        .collect::<Vec<f64>>()
+                        .iter()
+                        .all(|val| {
+                            val.is_finite()
+                                && val.fract().abs() < f64::MIN_POSITIVE
+                                && val.abs() < i64::MAX as f64
+                        })
+                    {
+                        let mut builder = Int64Builder::new();
+
+                        for index in 0..arr.len() {
+                            if arr.is_null(index) {
+                                builder.append_null();
+                            } else {
+                                builder.append_value(arr.value(index) as i64);
+                            }
+                        }
+
+                        column = Arc::new(builder.finish());
+                    }
+
+                    if let Some(ff) = table_def
+                        .fields
+                        .iter_mut()
+                        .find(|f| f.name == *field.name())
+                    {
+                        ff.canonical_type = column.data_type().clone();
+                    }
+                }
+            }
 
             match column.data_type() {
                 DataType::LargeUtf8 | DataType::Utf8 | DataType::Int32 | DataType::Int64 => {
-                    let stats = ColumnStats::new(column);
+                    let stats = ColumnStats::new(&column);
                     let resolved_result = resolver.promote(column.data_type(), &stats)?;
 
                     if let Some(ff) = table_def
@@ -240,6 +174,17 @@ pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
                     }
                 }
                 _ => {}
+            }
+
+            let metrics = compute_field_metrics(batch)?;
+
+            for field in &mut table_def.fields {
+                if let Some(m) = metrics.get(&field.name) {
+                    field.char_class_signature = Some(m.char_class_signature);
+                    field.is_monotonic = m.monotonicity;
+                    field.cardinality = Some(m.cardinality);
+                    field.avg_byte_length = m.avg_byte_length;
+                }
             }
         }
         Ok(())

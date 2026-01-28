@@ -8,489 +8,480 @@ use arrow::{
 };
 use calamine::{Data, Ods, Range, Reader, Table, Xls, Xlsb, Xlsx, XlsxError, open_workbook};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     fs::{self, File},
     io::Seek,
     path::PathBuf,
     sync::Arc,
 };
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
     analyzer::{
         catalog::{StorageBackend, StorageConfig},
-        inference::{
-            SchemaInferenceEngine, SourceField, compute_field_metrics, convert_into_table_defs,
-            promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
-        },
+        inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
+        probe::InferenceStats,
     },
     error::NisabaError,
-    types::TableDef,
+    types::{TableDef, TableRep},
 };
 
 // =================================================
-// Flat-File Inference Engine
+// CSV Inference Engine
 // =================================================
-
-/// File inference engine for common data file formats
 #[derive(Debug)]
-pub struct FileInferenceEngine {
+pub struct CsvInferenceEngine {
     sample_size: usize,
     csv_has_header: bool,
 }
 
-impl Default for FileInferenceEngine {
-    fn default() -> Self {
+impl CsvInferenceEngine {
+    pub fn new(sample_size: Option<usize>, csv_has_header: Option<bool>) -> Self {
         Self {
-            sample_size: 1000,
-            csv_has_header: true,
+            sample_size: sample_size.unwrap_or(1000),
+            csv_has_header: csv_has_header.unwrap_or(true),
         }
     }
-}
 
-impl FileInferenceEngine {
-    pub fn new() -> Self {
-        FileInferenceEngine::default()
-    }
-
-    pub fn with_sample_size(mut self, size: usize) -> Self {
-        self.sample_size = size;
-        self
-    }
-
-    pub fn with_csv_hasheader(mut self, has_header: bool) -> Self {
-        self.csv_has_header = has_header;
-        self
-    }
-
-    fn infer_from_csv(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
+    pub fn csv_store_infer<F, Fut>(
+        &self,
+        config: &StorageConfig,
+        infer_stats: Arc<Mutex<InferenceStats>>,
+        workers: usize,
+        on_table: F,
+    ) -> Result<Vec<TableRep>, NisabaError>
+    where
+        F: Fn(Vec<TableDef>) -> Fut + Sync,
+        Fut: Future<Output = Result<(), NisabaError>> + Send,
+    {
         let dir_str = config.connection_string()?;
         let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
 
-        let entries = fs::read_dir(dir_str)?;
+        // Collect CSV paths first
+        let csv_paths: Vec<_> = fs::read_dir(dir_str)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("csv"))
+            .collect();
 
-        let mut table_defs: Vec<TableDef> = Vec::new();
+        let table_reps = Mutex::new(Vec::new());
 
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.extension().and_then(|s| s.to_str()) == Some("csv") {
-                let mut file = File::open(&path)?;
-
-                let (schema, _) = Format::default()
-                    .with_header(self.csv_has_header)
-                    .infer_schema(&mut file, Some(self.sample_size))?;
-
-                file.rewind()?;
-
-                let mut csv_reader = ReaderBuilder::new(Arc::new(schema.clone()))
-                    .with_header(self.csv_has_header)
-                    .build(file)?;
-
-                let record_batch = csv_reader.next();
-
-                if let Some(v) = &path.file_name().and_then(|s| s.to_str()) {
-                    let table_name = (*v).to_string();
-
-                    let result: Vec<SourceField> = schema
-                        .fields()
-                        .iter()
-                        .map(|f| SourceField {
-                            silo_id: silo_id.clone(),
-                            table_schema: "csv".into(),
-                            table_name: table_name.clone(),
-                            column_name: f.name().clone(),
-                            udt_name: format!("{}", f.data_type()),
-                            data_type: f.data_type().to_string(),
-                            column_default: None,
-                            character_maximum_length: None,
-                            is_nullable: if f.is_nullable() {
-                                "YES".into()
-                            } else {
-                                "NO".into()
-                            },
-                            numeric_precision: None,
-                            numeric_scale: None,
-                            datetime_precision: None,
-                        })
-                        .collect();
-
-                    // There will be generation of only one table def
-                    let mut table_def = convert_into_table_defs(result)?;
-
-                    if let Some(batch) = record_batch {
-                        let mut batch = batch?;
-
-                        // Promotion
-                        let schema = batch.schema();
-
-                        for (index, field) in schema.fields().iter().enumerate() {
-                            let column = batch.column(index);
-
-                            match column.data_type() {
-                                DataType::LargeUtf8
-                                | DataType::Utf8
-                                | DataType::Int32
-                                | DataType::Int64 => {
-                                    let stats = ColumnStats::new(column);
-                                    let resolver = TypeLatticeResolver::new();
-                                    let resolved_result =
-                                        resolver.promote(column.data_type(), &stats)?;
-
-                                    if let Some(ff) = table_def[0]
-                                        .fields
-                                        .iter_mut()
-                                        .find(|f| f.name == *field.name())
-                                    {
-                                        ff.type_confidence = Some(resolved_result.confidence);
-
-                                        // Update char_max_length
-                                        match (&ff.canonical_type, &resolved_result.dest_type) {
-                                            (DataType::Utf8, DataType::Utf8)
-                                            | (DataType::LargeUtf8, DataType::LargeUtf8)
-                                            | (DataType::Utf8View, DataType::Utf8View) => {
-                                                ff.char_max_length =
-                                                    resolved_result.character_maximum_length;
-                                            }
-
-                                            (_, _) => {}
-                                        }
-
-                                        // Update type related signals when there is a mismatch on types
-                                        if ff.canonical_type != resolved_result.dest_type {
-                                            ff.canonical_type = resolved_result.dest_type;
-                                            ff.type_confidence = Some(resolved_result.confidence);
-                                            ff.is_nullable = resolved_result.nullable;
-                                            ff.char_max_length =
-                                                resolved_result.character_maximum_length;
-                                            ff.numeric_precision =
-                                                resolved_result.numeric_precision;
-                                            ff.numeric_scale = resolved_result.numeric_scale;
-                                            ff.datetime_precision =
-                                                resolved_result.datetime_precision;
-
-                                            // Very important for field values in batch to be updated
-                                            cast_utf8_column(
-                                                &mut batch,
-                                                &ff.name,
-                                                &ff.canonical_type,
-                                            )?;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        let metrics = compute_field_metrics(&batch)?;
-
-                        let _ = table_def[0].fields.iter_mut().map(|f| {
-                            let fmetrics = metrics.get(&f.name);
-
-                            if let Some(m) = fmetrics {
-                                f.char_class_signature = Some(m.char_class_signature);
-                                f.is_monotonic = m.monotonicity;
-                                f.cardinality = Some(m.cardinality);
-                                f.avg_byte_length = m.avg_byte_length
-                            }
-                        });
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()?
+            .install(|| {
+                csv_paths.par_iter().for_each(|path| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    {
+                        let mut stats = rt.block_on(infer_stats.lock());
+                        stats.tables_processed += 1;
                     }
 
-                    table_defs.extend(table_def);
-                }
-            }
-        }
+                    match self.infer_single_csv(path, &silo_id) {
+                        Ok(table_def) => {
+                            {
+                                let mut stats = rt.block_on(infer_stats.lock());
+                                stats.tables_inferred += 1;
+                                stats.fields_inferred += table_def.fields.len();
+                            }
 
-        Ok(table_defs)
-    }
+                            {
+                                let mut table_reps = rt.block_on(table_reps.lock());
+                                table_reps.push((&table_def).into());
+                            }
 
-    fn infer_from_excel(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
-        let dir_str = &config.dir_path.clone().ok_or(NisabaError::Missing(
-            "Directory with Excel workbooks not provided".into(),
-        ))?;
-        // Get all excel filenames
-        let entries = fs::read_dir(dir_str)?;
-        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
-
-        let mut table_defs: Vec<TableDef> = Vec::new();
-
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| {
-                    ["xls", "xlsx", "xlsm", "xlsb"]
-                        .iter()
-                        .any(|sufx| s.ends_with(sufx))
+                            if let Err(e) = rt.block_on(on_table(vec![table_def])) {
+                                let mut stats = rt.block_on(infer_stats.lock());
+                                stats.errors.push(e.to_string());
+                            }
+                        }
+                        Err(e) => {
+                            let mut stats = rt.block_on(infer_stats.lock());
+                            stats.errors.push(e.to_string());
+                        }
+                    }
                 })
-                .unwrap_or(false)
-            {
-                let record_batches = read_excel_to_record_batch(&path)?;
+            });
 
-                for (mut batch, table_name) in record_batches {
-                    let schema = batch.schema();
-
-                    if let Some(v) = &path.file_name().and_then(|s| s.to_str()) {
-                        let table_schema = (*v).to_string();
-
-                        let result: Vec<SourceField> = schema
-                            .fields()
-                            .iter()
-                            .map(|f| SourceField {
-                                silo_id: silo_id.clone(),
-                                table_schema: table_schema.clone(),
-                                table_name: table_name.clone(),
-                                column_name: f.name().clone(),
-                                udt_name: f.data_type().to_string(),
-                                data_type: f.data_type().to_string(),
-                                column_default: None,
-                                character_maximum_length: None,
-                                is_nullable: if f.is_nullable() {
-                                    "YES".into()
-                                } else {
-                                    "NO".into()
-                                },
-                                numeric_precision: None,
-                                numeric_scale: None,
-                                datetime_precision: None,
-                            })
-                            .collect();
-
-                        // There will be generation of only one table def
-                        let mut table_def = convert_into_table_defs(result)?;
-
-                        for (index, field) in schema.fields().iter().enumerate() {
-                            let column = batch.column(index);
-
-                            match column.data_type() {
-                                DataType::LargeUtf8
-                                | DataType::Utf8
-                                | DataType::Int32
-                                | DataType::Int64 => {
-                                    let stats = ColumnStats::new(column);
-
-                                    let resolver = TypeLatticeResolver::new();
-                                    let resolved_result =
-                                        resolver.promote(column.data_type(), &stats)?;
-
-                                    if let Some(ff) = table_def[0]
-                                        .fields
-                                        .iter_mut()
-                                        .find(|f| f.name == *field.name())
-                                    {
-                                        ff.type_confidence = Some(resolved_result.confidence);
-                                        // Update char_max_length
-                                        match (&ff.canonical_type, &resolved_result.dest_type) {
-                                            (DataType::Utf8, DataType::Utf8)
-                                            | (DataType::LargeUtf8, DataType::LargeUtf8)
-                                            | (DataType::Utf8View, DataType::Utf8View) => {
-                                                ff.char_max_length =
-                                                    resolved_result.character_maximum_length;
-                                            }
-
-                                            (_, _) => {}
-                                        }
-                                        if ff.canonical_type != resolved_result.dest_type {
-                                            ff.canonical_type = resolved_result.dest_type.clone();
-                                            ff.type_confidence = Some(resolved_result.confidence);
-                                            ff.is_nullable = resolved_result.nullable;
-                                            ff.char_max_length =
-                                                resolved_result.character_maximum_length;
-                                            ff.numeric_precision =
-                                                resolved_result.numeric_precision;
-                                            ff.numeric_scale = resolved_result.numeric_scale;
-                                            ff.datetime_precision =
-                                                resolved_result.datetime_precision;
-
-                                            // Very important for field values in batch to be updated
-                                            cast_utf8_column(
-                                                &mut batch,
-                                                &ff.name,
-                                                &resolved_result.dest_type,
-                                            )?;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-
-                            let metrics = compute_field_metrics(&batch)?;
-
-                            let _ = table_def[0].fields.iter_mut().map(|f| {
-                                let fmetrics = metrics.get(&f.name);
-
-                                if let Some(m) = fmetrics {
-                                    f.char_class_signature = Some(m.char_class_signature);
-                                    f.is_monotonic = m.monotonicity;
-                                    f.cardinality = Some(m.cardinality);
-                                    f.avg_byte_length = m.avg_byte_length
-                                }
-                            });
-                        }
-
-                        table_defs.extend(table_def);
-                    }
-                }
-            }
-        }
-
-        Ok(table_defs)
+        Ok(table_reps.into_inner())
     }
 
-    fn infer_from_parquet(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
-        let dir_str = config.connection_string()?;
+    fn infer_single_csv(&self, path: &PathBuf, silo_id: &str) -> Result<TableDef, NisabaError> {
+        let mut file = File::open(path)?;
 
-        // Get all parquet filenames
-        let entries = fs::read_dir(dir_str)?;
-        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
+        // 1. Infer schema from file
+        let (schema, _) = Format::default()
+            .with_header(self.csv_has_header)
+            .infer_schema(&mut file, Some(self.sample_size))?;
 
-        let mut table_defs: Vec<TableDef> = Vec::new();
+        file.rewind()?;
 
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
+        // 2. Read batch for stats and promotion(inference)
+        let mut csv_reader = ReaderBuilder::new(Arc::new(schema.clone()))
+            .with_header(self.csv_has_header)
+            .build(file)?;
 
-            if path.extension().and_then(|s| s.to_str()) == Some("parquet") {
-                let file = File::open(&path)?;
-                let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
-                let schema = builder.schema();
+        let record_batch = csv_reader.next();
 
-                if let Some(v) = &path.file_name().and_then(|s| s.to_str()) {
-                    let table_name = (*v).to_string();
-                    let result: Vec<SourceField> = schema
-                        .fields()
-                        .iter()
-                        .map(|field| SourceField {
-                            silo_id: silo_id.clone(),
-                            table_schema: "default".into(),
-                            table_name: table_name.clone(),
-                            column_name: field.name().into(),
-                            udt_name: format!("{}", field.data_type()),
-                            data_type: field.extension_type_name().unwrap_or_default().to_string(),
-                            column_default: None,
-                            character_maximum_length: None,
-                            is_nullable: format!("{}", field.is_nullable()),
-                            numeric_precision: None,
-                            numeric_scale: None,
-                            datetime_precision: None,
-                        })
-                        .collect();
+        let table_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| NisabaError::Invalid(path.to_string_lossy().into()))?
+            .to_string();
 
-                    // There will be generation of only one table def
-                    let mut table_def = convert_into_table_defs(result)?;
+        // 3. Build source fields
+        let source_fields: Vec<SourceField> = schema
+            .fields()
+            .iter()
+            .map(|f| SourceField {
+                silo_id: silo_id.to_string(),
+                table_schema: "csv".into(),
+                table_name: table_name.clone(),
+                column_name: f.name().clone(),
+                udt_name: format!("{}", f.data_type()),
+                data_type: f.data_type().to_string(),
+                column_default: None,
+                character_maximum_length: None,
+                is_nullable: if f.is_nullable() {
+                    "YES".into()
+                } else {
+                    "NO".into()
+                },
+                numeric_precision: None,
+                numeric_scale: None,
+                datetime_precision: None,
+            })
+            .collect();
 
-                    let record_batch = builder.build()?.next();
+        // 4. Convert to table_def
+        let table_def = convert_into_table_defs(source_fields)?;
+        let mut table_def = table_def
+            .into_iter()
+            .next()
+            .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
 
-                    if let Some(batch) = record_batch {
-                        let mut batch = batch?;
-
-                        // Promotion
-                        let schema = batch.schema();
-
-                        for (index, field) in schema.fields().iter().enumerate() {
-                            let column = batch.column(index);
-
-                            match column.data_type() {
-                                DataType::LargeUtf8
-                                | DataType::Utf8
-                                | DataType::Int32
-                                | DataType::Int64 => {
-                                    let stats = ColumnStats::new(column);
-                                    let resolver = TypeLatticeResolver::new();
-                                    let resolved_result =
-                                        resolver.promote(column.data_type(), &stats)?;
-
-                                    if let Some(ff) = table_def[0]
-                                        .fields
-                                        .iter_mut()
-                                        .find(|f| f.name == *field.name())
-                                    {
-                                        ff.type_confidence = Some(resolved_result.confidence);
-
-                                        // Update char_max_length
-                                        match (&ff.canonical_type, &resolved_result.dest_type) {
-                                            (DataType::Utf8, DataType::Utf8)
-                                            | (DataType::LargeUtf8, DataType::LargeUtf8)
-                                            | (DataType::Utf8View, DataType::Utf8View) => {
-                                                ff.char_max_length =
-                                                    resolved_result.character_maximum_length;
-                                            }
-
-                                            (_, _) => {}
-                                        }
-
-                                        if ff.canonical_type != resolved_result.dest_type {
-                                            ff.canonical_type = resolved_result.dest_type;
-                                            ff.type_confidence = Some(resolved_result.confidence);
-                                            ff.is_nullable = resolved_result.nullable;
-                                            ff.char_max_length =
-                                                resolved_result.character_maximum_length;
-                                            ff.numeric_precision =
-                                                resolved_result.numeric_precision;
-                                            ff.numeric_scale = resolved_result.numeric_scale;
-                                            ff.datetime_precision =
-                                                resolved_result.datetime_precision;
-
-                                            // Very important for field values in batch to be updated
-                                            cast_utf8_column(
-                                                &mut batch,
-                                                &ff.name,
-                                                &ff.canonical_type,
-                                            )?;
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        let metrics = compute_field_metrics(&batch)?;
-
-                        let _ = table_def[0].fields.iter_mut().map(|f| {
-                            let fmetrics = metrics.get(&f.name);
-
-                            if let Some(m) = fmetrics {
-                                f.char_class_signature = Some(m.char_class_signature);
-                                f.is_monotonic = m.monotonicity;
-                                f.cardinality = Some(m.cardinality);
-                                f.avg_byte_length = m.avg_byte_length
-                            }
-                        });
-                    }
-
-                    table_defs.extend(table_def);
-                }
-            }
+        if let Some(Ok(mut batch)) = record_batch {
+            self.enrich_table_def(&mut table_def, &mut batch)?;
         }
 
-        Ok(table_defs)
+        Ok(table_def)
     }
 }
 
-impl SchemaInferenceEngine for FileInferenceEngine {
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
-        match config.backend {
-            StorageBackend::Csv => self.infer_from_csv(config),
-            StorageBackend::Excel => self.infer_from_excel(config),
-            StorageBackend::Parquet => self.infer_from_parquet(config),
-            _ => Err(NisabaError::Unsupported(format!(
-                "{:?} file store unsupported by File engine",
-                config.backend
-            )))?,
-        }
-    }
-
+impl SchemaInferenceEngine for CsvInferenceEngine {
     fn can_handle(&self, backend: &StorageBackend) -> bool {
-        matches!(backend, |StorageBackend::Csv| StorageBackend::Excel
-            | StorageBackend::Parquet)
+        matches!(backend, StorageBackend::Csv)
     }
 
     fn engine_name(&self) -> &str {
-        "File"
+        "csv"
+    }
+}
+
+// =================================================
+// Excel Inference Engine
+// =================================================
+#[derive(Debug)]
+pub struct ExcelInferenceEngine {
+    sample_size: usize,
+    excel_has_header: bool,
+}
+
+impl ExcelInferenceEngine {
+    pub fn new(sample_size: Option<usize>, excel_has_header: Option<bool>) -> Self {
+        Self {
+            sample_size: sample_size.unwrap_or(1000),
+            excel_has_header: excel_has_header.unwrap_or(true),
+        }
+    }
+
+    pub fn excel_store_infer<F, Fut>(
+        &self,
+        config: &StorageConfig,
+        infer_stats: Arc<Mutex<InferenceStats>>,
+        workers: usize,
+        on_tables: F,
+    ) -> Result<Vec<TableRep>, NisabaError>
+    where
+        F: Fn(Vec<TableDef>) -> Fut + Sync,
+        Fut: Future<Output = Result<(), NisabaError>> + Send,
+    {
+        let dir_str = config.connection_string()?;
+        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
+
+        // Collect Excel paths first
+        let excel_paths: Vec<_> = fs::read_dir(dir_str)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                let ext = p.extension().and_then(|s| s.to_str());
+                ext == Some("csv")
+                    || ext == Some("xls")
+                    || ext == Some("xlsx")
+                    || ext == Some("xlsm")
+                    || ext == Some("xlsb")
+            })
+            .collect();
+
+        let table_reps = Mutex::new(Vec::new());
+
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()?
+            .install(|| {
+                excel_paths.par_iter().for_each(|path| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+
+                    {
+                        let mut stats = rt.block_on(infer_stats.lock());
+                        stats.tables_processed += 1;
+                    }
+
+                    match self.infer_single_excel(path, &silo_id) {
+                        Ok(table_defs) => {
+                            let tables_count = table_defs.len();
+                            let fields_count: usize =
+                                table_defs.iter().map(|f| f.fields.len()).sum();
+
+                            {
+                                let mut stats = rt.block_on(infer_stats.lock());
+                                stats.tables_inferred += tables_count;
+                                stats.fields_inferred += fields_count;
+                            }
+
+                            {
+                                let mut table_reps = rt.block_on(table_reps.lock());
+                                table_reps.extend(table_defs.iter().map(|td| {
+                                    let tr: TableRep = td.into();
+                                    tr
+                                }));
+                            }
+
+                            if let Err(e) = rt.block_on(on_tables(table_defs)) {
+                                let mut stats = rt.block_on(infer_stats.lock());
+                                stats.errors.push(e.to_string());
+                            }
+                        }
+
+                        Err(e) => {
+                            let mut stats = rt.block_on(infer_stats.lock());
+                            stats.errors.push(e.to_string());
+                        }
+                    }
+                })
+            });
+
+        Ok(table_reps.into_inner())
+    }
+
+    fn infer_single_excel(
+        &self,
+        path: &PathBuf,
+        silo_id: &str,
+    ) -> Result<Vec<TableDef>, NisabaError> {
+        let record_batches =
+            read_excel_to_record_batch(path, Some(self.sample_size), Some(self.excel_has_header))?;
+
+        let table_schema = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|t| t.to_string())
+            .ok_or(NisabaError::Invalid("Invalid excel path file name".into()))?;
+        let mut table_defs = Vec::new();
+
+        for (mut batch, table_name) in record_batches {
+            let schema = batch.schema();
+
+            let source_fields: Vec<SourceField> = schema
+                .fields()
+                .iter()
+                .map(|f| SourceField {
+                    silo_id: silo_id.to_string(),
+                    table_schema: table_schema.clone(),
+                    table_name: table_name.clone(),
+                    column_name: f.name().clone(),
+                    udt_name: f.data_type().to_string(),
+                    data_type: f.data_type().to_string(),
+                    column_default: None,
+                    character_maximum_length: None,
+                    is_nullable: if f.is_nullable() {
+                        "YES".into()
+                    } else {
+                        "NO".into()
+                    },
+                    numeric_precision: None,
+                    numeric_scale: None,
+                    datetime_precision: None,
+                })
+                .collect();
+
+            // 4. Convert to table_def
+            let table_def = convert_into_table_defs(source_fields)?;
+
+            let mut table_def = table_def
+                .into_iter()
+                .next()
+                .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
+
+            self.enrich_table_def(&mut table_def, &mut batch)?;
+
+            table_defs.push(table_def);
+        }
+
+        Ok(table_defs)
+    }
+}
+
+impl SchemaInferenceEngine for ExcelInferenceEngine {
+    fn can_handle(&self, backend: &StorageBackend) -> bool {
+        matches!(backend, StorageBackend::Excel)
+    }
+
+    fn engine_name(&self) -> &str {
+        "excel"
+    }
+}
+
+// =================================================
+// Parquet Inference Engine
+// =================================================
+#[derive(Debug)]
+pub struct ParquetInferenceEngine {
+    sample_size: usize,
+}
+
+impl ParquetInferenceEngine {
+    pub fn new(sample_size: Option<usize>) -> Self {
+        Self {
+            sample_size: sample_size.unwrap_or(1000),
+        }
+    }
+
+    pub fn parquet_store_infer<F, Fut>(
+        &self,
+        config: &StorageConfig,
+        infer_stats: Arc<Mutex<InferenceStats>>,
+        workers: usize,
+        on_tables: F,
+    ) -> Result<Vec<TableRep>, NisabaError>
+    where
+        F: Fn(Vec<TableDef>) -> Fut + Sync,
+        Fut: Future<Output = Result<(), NisabaError>> + Send,
+    {
+        let dir_str = config.connection_string()?;
+        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
+
+        // Collect Parquet paths first
+        let parquet_paths: Vec<_> = fs::read_dir(dir_str)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("parquet"))
+            .collect();
+
+        let table_reps = Mutex::new(Vec::new());
+
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()?
+            .install(|| {
+                parquet_paths.par_iter().for_each(|path| {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    {
+                        let mut stats = rt.block_on(infer_stats.lock());
+                        stats.tables_processed += 1;
+                    }
+
+                    match self.infer_single_parquet(path, &silo_id) {
+                        Ok(table_def) => {
+                            {
+                                let mut stats = rt.block_on(infer_stats.lock());
+                                stats.tables_inferred += 1;
+                                stats.fields_inferred += 1;
+                                let mut table_reps = rt.block_on(table_reps.lock());
+                                table_reps.push((&table_def).into());
+                            }
+
+                            if let Err(e) = rt.block_on(on_tables(vec![table_def])) {
+                                let mut stats = rt.block_on(infer_stats.lock());
+                                stats.errors.push(e.to_string());
+                            }
+                        }
+                        Err(e) => {
+                            let mut stats = rt.block_on(infer_stats.lock());
+                            stats.errors.push(e.to_string());
+                        }
+                    }
+                })
+            });
+
+        Ok(table_reps.into_inner())
+    }
+
+    fn infer_single_parquet(&self, path: &PathBuf, silo_id: &str) -> Result<TableDef, NisabaError> {
+        let file = File::open(path)?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?.with_limit(self.sample_size);
+        let schema = builder.schema();
+
+        let table_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|t| t.to_string())
+            .ok_or(NisabaError::Invalid("Invalid excel path file name".into()))?;
+
+        let result: Vec<SourceField> = schema
+            .fields()
+            .iter()
+            .map(|field| SourceField {
+                silo_id: silo_id.to_string(),
+                table_schema: "default".into(),
+                table_name: table_name.clone(),
+                column_name: field.name().into(),
+                udt_name: format!("{}", field.data_type()),
+                data_type: field.extension_type_name().unwrap_or_default().to_string(),
+                column_default: None,
+                character_maximum_length: None,
+                is_nullable: format!("{}", field.is_nullable()),
+                numeric_precision: None,
+                numeric_scale: None,
+                datetime_precision: None,
+            })
+            .collect();
+
+        let table_def = convert_into_table_defs(result)?;
+
+        let mut table_def = table_def
+            .into_iter()
+            .next()
+            .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
+
+        let mut batch = builder.build()?.next().ok_or(NisabaError::Missing(
+            "Parquet RecordBatch not generated on read".into(),
+        ))??;
+
+        self.enrich_table_def(&mut table_def, &mut batch)?;
+
+        Ok(table_def)
+    }
+}
+
+impl SchemaInferenceEngine for ParquetInferenceEngine {
+    fn can_handle(&self, backend: &StorageBackend) -> bool {
+        matches!(backend, StorageBackend::Parquet)
+    }
+
+    fn engine_name(&self) -> &str {
+        "parquet"
     }
 }
 
@@ -566,7 +557,11 @@ impl Workbook {
     }
 }
 
-fn read_excel_to_record_batch(path: &PathBuf) -> Result<Vec<(RecordBatch, String)>, NisabaError> {
+fn read_excel_to_record_batch(
+    path: &PathBuf,
+    limit: Option<usize>,
+    has_header: Option<bool>,
+) -> Result<Vec<(RecordBatch, String)>, NisabaError> {
     // Open workbook
     let mut workbook = Workbook::open(path)?;
     let sheet_names = workbook.sheet_names();
@@ -592,7 +587,7 @@ fn read_excel_to_record_batch(path: &PathBuf) -> Result<Vec<(RecordBatch, String
 
                 let range = table.data();
 
-                let result = read_range_to_arrow(range, headers, 0)?;
+                let result = read_range_to_arrow(range, headers, 0, limit)?;
 
                 dfs.extend(result.into_iter().map(|f| (f, tbl.clone())));
             }
@@ -603,9 +598,11 @@ fn read_excel_to_record_batch(path: &PathBuf) -> Result<Vec<(RecordBatch, String
 
             let headers: Vec<String> = rows[0].iter().map(|cell| cell.to_string()).collect();
 
-            let result = read_range_to_arrow(&range, &headers, 1)?;
+            let skip_rows = has_header.unwrap_or(false) as usize;
 
-            dfs.extend(result.into_iter().map(|f| (f, sheet_name.clone())));
+            let batch = read_range_to_arrow(&range, &headers, skip_rows, limit)?;
+
+            dfs.extend(batch.into_iter().map(|f| (f, sheet_name.clone())));
         }
     }
 
@@ -616,8 +613,11 @@ fn read_range_to_arrow(
     range: &Range<Data>,
     headers: &[String],
     skip: usize,
+    limit: Option<usize>,
 ) -> Result<Option<RecordBatch>, NisabaError> {
     let (height, width) = range.get_size();
+
+    let height = limit.map(|v| v.min(height)).unwrap_or(height);
 
     if height > skip {
         let mut columns: Vec<ArrayRef> = Vec::new();
@@ -778,44 +778,33 @@ fn calamine_type_to_arrow(values: &[&Data]) -> DataType {
 
 #[cfg(test)]
 mod tests {
+    use futures::executor::block_on;
+
+    use crate::{AnalyzerConfig, LatentStore};
+
     use super::*;
 
     #[test]
     fn test_csv_inference() {
         let config = StorageConfig::new_file_backend(StorageBackend::Csv, "./assets/csv").unwrap();
 
-        let csv_inference = FileInferenceEngine::default();
+        let csv_inference = CsvInferenceEngine::new(None, None);
 
-        let result = csv_inference.infer_from_csv(&config).unwrap();
+        let stats = Arc::new(Mutex::new(InferenceStats::default()));
+
+        let latent_store = Arc::new(block_on(LatentStore::new(None, None)).unwrap());
+
+        let table_handler =
+            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+
+        let result = csv_inference
+            .csv_store_infer(&config, stats, 4, |table_defs| async {
+                table_handler.store_tables(table_defs).await?;
+                Ok(())
+            })
+            .unwrap();
 
         assert_eq!(result.len(), 9);
-
-        // Fetched at is read in as Integer but parquet seems to store the semantic type
-        let fetched_at = result
-            .iter()
-            .find(|t| t.name == "albums.csv")
-            .unwrap()
-            .fields
-            .iter()
-            .find(|f| f.name == "fetched_at")
-            .unwrap();
-
-        assert!(matches!(
-            fetched_at.canonical_type,
-            DataType::Timestamp(_, _)
-        ));
-
-        // release_date is read in as Integer but parquet seems to store the semantic type
-        let release_date = result
-            .iter()
-            .find(|t| t.name == "albums.csv")
-            .unwrap()
-            .fields
-            .iter()
-            .find(|f| f.name == "release_date")
-            .unwrap();
-
-        assert!(matches!(release_date.canonical_type, DataType::Date32));
     }
 
     #[test]
@@ -823,9 +812,20 @@ mod tests {
         let config =
             StorageConfig::new_file_backend(StorageBackend::Excel, "./assets/xlsx").unwrap();
 
-        let excel_inference = FileInferenceEngine::default();
+        let excel_inference = ExcelInferenceEngine::new(None, None);
 
-        let result = excel_inference.infer_from_excel(&config).unwrap();
+        let stats = Arc::new(Mutex::new(InferenceStats::default()));
+
+        let latent_store = Arc::new(block_on(LatentStore::new(None, None)).unwrap());
+        let table_handler =
+            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+
+        let result = excel_inference
+            .excel_store_infer(&config, stats, 4, |table_defs| async {
+                table_handler.store_tables(table_defs).await?;
+                Ok(())
+            })
+            .unwrap();
 
         assert_eq!(result.len(), 9);
     }
@@ -835,9 +835,20 @@ mod tests {
         let config =
             StorageConfig::new_file_backend(StorageBackend::Excel, "./assets/parquet").unwrap();
 
-        let parquet_inference = FileInferenceEngine::default();
+        let parquet_inference = ParquetInferenceEngine::new(None);
 
-        let result = parquet_inference.infer_from_parquet(&config).unwrap();
+        let stats = Arc::new(Mutex::new(InferenceStats::default()));
+
+        let latent_store = Arc::new(block_on(LatentStore::new(None, None)).unwrap());
+        let table_handler =
+            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+
+        let result = parquet_inference
+            .parquet_store_infer(&config, stats, 4, |table_defs| async {
+                table_handler.store_tables(table_defs).await?;
+                Ok(())
+            })
+            .unwrap();
 
         assert_eq!(result.len(), 9);
     }

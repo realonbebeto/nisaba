@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use graphrs::{
     Edge, EdgeDedupeStrategy, Graph, GraphSpecs, MissingNodeStrategy, SelfLoopsFalseStrategy,
@@ -9,15 +9,7 @@ use rand::{SeedableRng, rngs::StdRng};
 use rand_distr::{Distribution, Normal};
 use uuid::Uuid;
 
-use crate::{
-    AnalyzerConfig,
-    analyzer::{
-        report::{ClusterDef, ClusterItem},
-        retriever::Storable,
-    },
-    error::NisabaError,
-    types::MatchCandidate,
-};
+use crate::{AnalyzerConfig, error::NisabaError};
 
 /// The `deterministic_projection` function performs linear projection of a Matrix from one size to another
 ///
@@ -85,37 +77,24 @@ impl GraphClusterer {
     /// Returns:
     ///
     /// The `add_ann_edges` function returns a Result of unit value when successful and NisabaError on error.
-    pub fn add_ann_edges<T, C>(
+    pub fn add_ann_edges(
         &mut self,
         config: Arc<AnalyzerConfig>,
-        source: &T,
-        candidates: &[C],
-    ) -> Result<(), NisabaError>
-    where
-        T: Storable,
-        T::SearchResult: MatchCandidate<Body = T>,
-        C: MatchCandidate<Body = T>,
-    {
-        for c in candidates {
-            let adj_score = 1.0 - c.confidence();
+        source: Uuid,
+        candidates: &[(Uuid, f32)],
+    ) -> Result<(), NisabaError> {
+        for (id, conf) in candidates {
+            let adj_score = 1.0 - conf;
             if adj_score >= config.similarity_threshold {
-                if let Ok(existing) = self.graph.get_edge(source.get_id(), c.body().get_id())
+                if let Ok(existing) = self.graph.get_edge(source, *id)
                     && adj_score > existing.weight as f32
                 {
                     self.graph
-                        .add_edge(Edge::with_weight(
-                            source.get_id(),
-                            c.body().get_id(),
-                            adj_score.into(),
-                        ))
+                        .add_edge(Edge::with_weight(source, *id, adj_score.into()))
                         .map_err(NisabaError::Graph)?;
                 } else {
                     self.graph
-                        .add_edge(Edge::with_weight(
-                            source.get_id(),
-                            c.body().get_id(),
-                            adj_score.into(),
-                        ))
+                        .add_edge(Edge::with_weight(source, *id, adj_score.into()))
                         .map_err(NisabaError::Graph)?;
                 }
             }
@@ -137,39 +116,12 @@ impl GraphClusterer {
     ///
     /// The `clusters` function returns a Result of Vec of C determined by build_cluster function
     /// when successful and NisabaError on error.
-    pub fn clusters<D, R, C>(
-        &self,
-        defs: &[D],
-        build_cluster: impl Fn(u32, Vec<R>) -> C,
-    ) -> Result<Vec<C>, NisabaError>
-    where
-        D: ClusterDef<Id = Uuid>,
-        R: ClusterItem<Def = D>,
-    {
+    pub fn clusters(&self) -> Result<Vec<HashSet<Uuid>>, NisabaError> {
         // Community clusters
         let clusters = leiden(&self.graph, true, QualityFunction::CPM, None, None, None)
             .map_err(NisabaError::Graph)?;
 
-        let communities: Vec<C> = clusters
-            .into_iter()
-            .enumerate()
-            .map(|(cid, vals)| {
-                let items = defs
-                    .iter()
-                    .filter(|d| vals.contains(&d.id()))
-                    .cloned()
-                    .collect::<Vec<D>>();
-
-                let items = items
-                    .into_iter()
-                    .map(|it| R::from_def(it.id(), &it))
-                    .collect::<Vec<R>>();
-
-                build_cluster(cid as u32, items)
-            })
-            .collect();
-
-        Ok(communities)
+        Ok(clusters)
     }
 }
 

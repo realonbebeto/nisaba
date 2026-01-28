@@ -1,17 +1,18 @@
-use futures::executor::block_on;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
+    CsvInferenceEngine, ExcelInferenceEngine, MySQLInferenceEngine, NoSQLInferenceEngine,
+    ParquetInferenceEngine, PostgreSQLInferenceEngine, SqliteInferenceEngine, StorageBackend,
     analyzer::{
         calculation::GraphClusterer,
         catalog::StorageConfig,
-        inference::InferenceEngineRegistry,
-        report::{FieldCluster, FieldMatch, TableCluster, TableMatch},
+        report::{FieldCluster, FieldMatch, FieldResult, TableCluster, TableMatch, TableResult},
         retriever::{LatentStore, Storable},
     },
     error::NisabaError,
-    types::{FieldDef, TableDef},
+    types::{FieldDef, TableRep},
 };
 
 #[derive(Debug, Clone)]
@@ -79,8 +80,9 @@ impl Default for AnalyzerConfig {
 pub struct SchemaAnalyzer {
     pub(crate) name: String,
     pub(crate) config: Arc<AnalyzerConfig>,
-    pub(crate) inference_engine: InferenceEngineRegistry,
     pub(crate) latent_store: Arc<LatentStore>,
+    pub(crate) storage_configs: Vec<StorageConfig>,
+    pub(crate) infer_stats: Arc<Mutex<InferenceStats>>,
 }
 impl std::fmt::Debug for SchemaAnalyzer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -92,14 +94,10 @@ impl std::fmt::Debug for SchemaAnalyzer {
 }
 
 impl SchemaAnalyzer {
-    /// The `analyze` function takes multiple collections/tables as inputs, infers their
+    /// The `analyze` function runs agains the beforehand provided storage location as StorageConfigs, infers their
     /// schemas, clusters them based on similarities.
     ///
     /// Arguments:
-    ///
-    /// * `configs`: The `configs` parameter in the `analyze` function is a vector of `StorageConfig`
-    ///   structs. These `StorageConfig` structs contains configuration information related to
-    ///   storage settings, such as database connection details.
     ///
     /// Returns:
     ///
@@ -107,38 +105,33 @@ impl SchemaAnalyzer {
     /// `TableCluster` objects or a `NisabaError`. If the clustering process is successful and at least
     /// one cluster is formed, it returns `Ok(Some(clusters))` with the clustered tables. If no clusters
     /// are formed, it returns `Ok(None)`.
-    pub async fn analyze(
-        &self,
-        configs: Vec<StorageConfig>,
-    ) -> Result<Option<Vec<TableCluster>>, NisabaError> {
-        // Take inputs (multiple collections/tables)
-        // E.g. Vec[Collection/Table], Vec[Collection/Table], Vec[Collection/Table] ...
+    pub async fn analyze(&self) -> Result<Option<Vec<TableCluster>>, NisabaError> {
+        let table_reps = self.discover_ecosystem().await?;
 
-        let tbl_defs = self.inference_engine.discover_ecosystem(configs)?;
-        self.index_schemas(&tbl_defs).await?;
+        let total_tables = table_reps.len();
 
         // Match Collection/Tables
         let mut clusterer = GraphClusterer::new();
 
-        for tbl_def in &tbl_defs {
-            let candidates = self.find_candidates(tbl_def).await?;
-            let candidates = candidates
-                .into_iter()
-                .filter(|c| c.schema.id != tbl_def.id)
-                .collect::<Vec<TableMatch>>();
+        for tbl_rep in &table_reps {
+            let candidates = self.find_candidates_table::<TableRep>(tbl_rep.id).await?;
 
-            clusterer.add_ann_edges(self.config.clone(), tbl_def, &candidates)?;
+            let ids: Vec<(Uuid, f32)> = candidates
+                .iter()
+                .map(|v| (v.schema.id, v.confidence))
+                .collect();
+
+            clusterer.add_ann_edges(self.config.clone(), tbl_rep.id, &ids)?;
         }
 
-        let mut clusters = clusterer.clusters(&tbl_defs, |cluster_id, tr| TableCluster {
-            cluster_id,
-            tables: tr,
-            field_clusters: Vec::new(),
-        })?;
+        let clusters = clusterer.clusters()?;
+
+        let mut clusters = self.cluster_tables(clusters, table_reps.clone())?;
+
         // Successful clustering
-        if clusters.len() < tbl_defs.len() {
+        if clusters.len() < total_tables {
             // Match Field Names Inside matched Collection/Tables
-            self.cluster_fields(&mut clusters, &tbl_defs).await?;
+            self.cluster_fields(&mut clusters, &table_reps).await?;
 
             return Ok(Some(clusters));
         }
@@ -148,27 +141,39 @@ impl SchemaAnalyzer {
         Ok(None)
     }
 
-    /// The `index_schemas` function asynchronously initializes a table handler, stores schema
-    /// items, and returns a result indicating success or an error.
-    ///
-    /// Arguments:
-    ///
-    /// * `schema_items`: `schema_items` is a slice of `TableDef` items that are passed as a parameter
-    ///   to the `index_schemas` function.
-    ///
-    /// Returns:
-    ///
-    /// The `index_schemas` function is returning a `Result<(), NisabaError>`.
-    async fn index_schemas(&self, schema_items: &[TableDef]) -> Result<(), NisabaError> {
-        let table_handler = self
-            .latent_store
-            .table_handler::<TableDef>(self.config.clone());
+    fn cluster_tables(
+        &self,
+        clusters: Vec<HashSet<Uuid>>,
+        table_reps: Vec<TableRep>,
+    ) -> Result<Vec<TableCluster>, NisabaError> {
+        let communities: Vec<TableCluster> = clusters
+            .into_iter()
+            .enumerate()
+            .map(|(cluster_id, vals)| {
+                let items = table_reps
+                    .iter()
+                    .filter(|d| vals.contains(&d.id))
+                    .cloned()
+                    .collect::<Vec<TableRep>>();
 
-        table_handler.initialize().await?;
+                let tables = items
+                    .into_iter()
+                    .map(|it| TableResult {
+                        id: it.id,
+                        silo_id: it.silo_id,
+                        table_name: it.name,
+                    })
+                    .collect::<Vec<TableResult>>();
 
-        table_handler.store(schema_items).await?;
+                TableCluster {
+                    cluster_id: cluster_id as u32,
+                    tables,
+                    field_clusters: Vec::new(),
+                }
+            })
+            .collect();
 
-        Ok(())
+        Ok(communities)
     }
 
     /// The `cluster_fields` function asynchronously clusters fields based on table definitions
@@ -190,49 +195,64 @@ impl SchemaAnalyzer {
     async fn cluster_fields(
         &self,
         clusters: &mut [TableCluster],
-        table_defs: &[TableDef],
+        table_reps: &[TableRep],
     ) -> Result<(), NisabaError> {
+        let mut cached_candidates = HashSet::new();
         for tbl_cluster in clusters {
             let table_ids: Vec<Uuid> = tbl_cluster.tables.iter().map(|v| v.id).collect();
 
-            let field_defs = table_defs
+            let field_defs = table_reps
                 .iter()
                 .filter(|v| table_ids.contains(&v.id))
                 .map(|v| v.fields.clone())
-                .collect::<Vec<Vec<FieldDef>>>()
+                .collect::<Vec<Vec<Uuid>>>()
                 .concat();
-
-            // Initialize vector store
-            let table_handler = self
-                .latent_store
-                .table_handler::<FieldDef>(self.config.clone());
-
-            table_handler.initialize().await?;
-
-            table_handler.store(&field_defs).await?;
 
             // Build graph
             let mut clusterer = GraphClusterer::new();
 
             for field_def in &field_defs {
-                let candidates = self.find_candidates(field_def).await?;
-                let candidates = candidates
-                    .into_iter()
-                    .filter(|c| {
-                        (c.schema.id != field_def.id)
-                            && (c.schema.table_name != field_def.table_name)
-                    })
-                    .collect::<Vec<FieldMatch>>();
+                let candidates = self.find_candidates_field::<FieldDef>(*field_def).await?;
 
-                clusterer.add_ann_edges(self.config.clone(), field_def, &candidates)?;
+                let ids: Vec<(Uuid, f32)> = candidates
+                    .iter()
+                    .map(|v| (v.schema.id, v.confidence))
+                    .collect();
+
+                clusterer.add_ann_edges(self.config.clone(), *field_def, &ids)?;
+
+                cached_candidates.extend(candidates.into_iter().map(|c| c.schema));
             }
 
-            let clusters = clusterer.clusters(&field_defs, |cluster_id, fr| FieldCluster {
-                cluster_id,
-                fields: fr,
-            })?;
+            let clusters = clusterer.clusters()?;
 
-            tbl_cluster.field_clusters = clusters;
+            let communities: Vec<FieldCluster> = clusters
+                .into_iter()
+                .enumerate()
+                .map(|(cluster_id, vals)| {
+                    let items = cached_candidates
+                        .iter()
+                        .filter(|d| vals.contains(&d.id))
+                        .collect::<Vec<&FieldDef>>();
+
+                    let fields = items
+                        .into_iter()
+                        .map(|it| FieldResult {
+                            id: it.id,
+                            silo_id: it.silo_id.clone(),
+                            table_name: it.table_name.clone(),
+                            field_name: it.name.clone(),
+                        })
+                        .collect::<Vec<FieldResult>>();
+
+                    FieldCluster {
+                        cluster_id: cluster_id as u32,
+                        fields,
+                    }
+                })
+                .collect();
+
+            tbl_cluster.field_clusters = communities;
 
             // table_handler.clear_table().await?;
         }
@@ -240,18 +260,154 @@ impl SchemaAnalyzer {
         Ok(())
     }
 
-    async fn find_candidates<T: Storable>(
+    async fn find_candidates_table<T: Storable>(
         &self,
-        query_schema: &T,
-    ) -> Result<Vec<T::SearchResult>, NisabaError> {
+        query_schema: Uuid,
+    ) -> Result<Vec<TableMatch>, NisabaError> {
         let table_handler = self.latent_store.table_handler::<T>(self.config.clone());
 
-        let candidates = table_handler
-            .search(query_schema, self.config.clone(), T::result_columns())
-            .await?;
-
-        Ok(candidates)
+        table_handler
+            .search_table_rep(query_schema, T::result_columns())
+            .await
     }
+
+    async fn find_candidates_field<T: Storable>(
+        &self,
+        query_schema: Uuid,
+    ) -> Result<Vec<FieldMatch>, NisabaError> {
+        let table_handler = self.latent_store.table_handler::<T>(self.config.clone());
+
+        table_handler
+            .search_field_def(query_schema, T::result_columns())
+            .await
+    }
+
+    async fn discover_ecosystem(&self) -> Result<Vec<TableRep>, NisabaError> {
+        let mut table_reps = Vec::new();
+
+        let table_handler = self
+            .latent_store
+            .table_handler::<TableRep>(self.config.clone());
+
+        table_handler.initialize().await?;
+
+        let field_handler = self
+            .latent_store
+            .table_handler::<FieldDef>(self.config.clone());
+
+        field_handler.initialize().await?;
+
+        for config in &self.storage_configs {
+            let reps = match config.backend {
+                StorageBackend::Csv => {
+                    let csv_inferer = CsvInferenceEngine::new(None, None);
+                    csv_inferer.csv_store_infer(
+                        config,
+                        self.infer_stats.clone(),
+                        4,
+                        |table_defs| async {
+                            table_handler.store_tables(table_defs).await?;
+                            Ok(())
+                        },
+                    )
+                }
+
+                StorageBackend::Excel => {
+                    let excel_inferer = ExcelInferenceEngine::new(None, None);
+                    excel_inferer.excel_store_infer(
+                        config,
+                        self.infer_stats.clone(),
+                        4,
+                        |table_defs| async {
+                            table_handler.store_tables(table_defs).await?;
+                            Ok(())
+                        },
+                    )
+                }
+
+                StorageBackend::MongoDB => {
+                    let mongo_inferer = NoSQLInferenceEngine::new(None);
+                    mongo_inferer
+                        .mongodb_store_infer(
+                            config,
+                            self.infer_stats.clone(),
+                            Arc::new(|table_defs| async {
+                                table_handler.store_tables(table_defs).await?;
+                                Ok(())
+                            }),
+                        )
+                        .await
+                }
+
+                StorageBackend::MySQL => {
+                    let mysql_inferer = MySQLInferenceEngine::new(None);
+
+                    mysql_inferer
+                        .mysql_store_infer(config, self.infer_stats.clone(), |table_defs| async {
+                            table_handler.store_tables(table_defs).await?;
+                            Ok(())
+                        })
+                        .await
+                }
+
+                StorageBackend::Parquet => {
+                    let parquet_inferer = ParquetInferenceEngine::new(None);
+
+                    parquet_inferer.parquet_store_infer(
+                        config,
+                        self.infer_stats.clone(),
+                        4,
+                        |table_defs| async {
+                            table_handler.store_tables(table_defs).await?;
+                            Ok(())
+                        },
+                    )
+                }
+
+                StorageBackend::PostgreSQL => {
+                    let postgres_inferer = PostgreSQLInferenceEngine::new(None);
+
+                    postgres_inferer
+                        .postgres_store_infer(
+                            config,
+                            self.infer_stats.clone(),
+                            |table_defs| async {
+                                table_handler.store_tables(table_defs).await?;
+                                Ok(())
+                            },
+                        )
+                        .await
+                }
+
+                StorageBackend::SQLite => {
+                    let sqlite_inferer = SqliteInferenceEngine::new(None);
+
+                    sqlite_inferer
+                        .sqlite_store_infer(config, self.infer_stats.clone(), |table_defs| async {
+                            table_handler.store_tables(table_defs).await?;
+                            Ok(())
+                        })
+                        .await
+                }
+            };
+
+            table_reps.extend(reps?);
+        }
+
+        table_handler.create_index().await?;
+
+        field_handler.create_index().await?;
+
+        Ok(table_reps)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct InferenceStats {
+    pub tables_processed: usize,
+    pub tables_inferred: usize,
+    pub fields_inferred: usize,
+    pub errors: Vec<String>,
 }
 
 /// The `SchemaAnalyzerBuilder` helps build the schema analyzer. It contains fields for configuration related to schema
@@ -266,18 +422,16 @@ impl SchemaAnalyzer {
 ///   These settings could include things like thresholds, rules, or options that affect how the schema analysis
 ///   is performed.
 ///
-/// * `inference_registry`: The `inference_registry` property is of type `InferenceEngineRegistry`. It stores and
-///   manages inference engines that are responsible for inferring schema information.
-///
-///
 /// * `latent_store`: The `latent_store` property is of type `Arc<LatentStore>`. It is used to store and
 ///   manage latent data within the schema analyzer.
+
+#[derive(Default)]
 pub struct SchemaAnalyzerBuilder {
     // fields for configuration
-    pub(crate) name: String,
-    pub(crate) config: AnalyzerConfig,
-    pub(crate) inference_registry: InferenceEngineRegistry,
-    pub(crate) latent_store: LatentStore,
+    pub(crate) name: Option<String>,
+    pub(crate) config: Option<AnalyzerConfig>,
+    pub(crate) latent_store: Option<LatentStore>,
+    pub(crate) storage_configs: Option<Vec<StorageConfig>>,
 }
 
 impl std::fmt::Debug for SchemaAnalyzerBuilder {
@@ -285,28 +439,15 @@ impl std::fmt::Debug for SchemaAnalyzerBuilder {
         f.debug_struct("AnalyzerBuilder")
             .field("name", &self.name)
             .field("config", &self.config)
-            .field("inference_registry", &self.inference_registry)
+            .field("storage_configs", &self.storage_configs)
             .finish()
-    }
-}
-
-impl Default for SchemaAnalyzerBuilder {
-    fn default() -> Self {
-        let ls = block_on(LatentStore::new(None));
-        SchemaAnalyzerBuilder {
-            name: "default".to_string(),
-            config: AnalyzerConfig::default(),
-            inference_registry: InferenceEngineRegistry::new(),
-            latent_store: ls,
-        }
     }
 }
 
 impl SchemaAnalyzerBuilder {
     pub fn new() -> Self {
-        Self::default()
+        SchemaAnalyzerBuilder::default()
     }
-
     /// The `with_name` function takes a mutable reference to a struct and a string, sets the
     /// struct's name field to the string value, and returns the modified struct.
     ///
@@ -319,8 +460,8 @@ impl SchemaAnalyzerBuilder {
     ///
     /// The `self` object is being returned after setting the `name` field to the provided `name`
     /// string.
-    pub fn with_name(mut self, name: &str) -> Self {
-        self.name = name.to_string();
+    pub fn with_name(mut self, name: Option<&str>) -> Self {
+        self.name = name.map(|n| n.to_string());
         self
     }
 
@@ -337,25 +478,8 @@ impl SchemaAnalyzerBuilder {
     ///
     /// The `self` object is being returned after updating the configuration with the provided
     /// `AnalyzerConfig` and converting it to an `Arc`.
-    pub fn with_config(mut self, config: AnalyzerConfig) -> Self {
+    pub fn with_config(mut self, config: Option<AnalyzerConfig>) -> Self {
         self.config = config;
-        self
-    }
-
-    /// The `with_inference_registry` function sets the inference registry store and returns the
-    /// modified object.
-    ///
-    /// Arguments:
-    ///
-    /// * `registry`: The `registry` parameter is of type `InferenceEngineRegistry`. It
-    ///   is used to set the store for the inference engines by passing an instance of `InferenceEngineRegistry` to
-    ///   the function.
-    ///
-    /// Returns:
-    ///
-    /// The `self` object is being returned after updating the store with the provided instance
-    pub fn with_inference_registry(mut self, registry: InferenceEngineRegistry) -> Self {
-        self.inference_registry = registry;
         self
     }
 
@@ -372,7 +496,24 @@ impl SchemaAnalyzerBuilder {
     ///
     /// The `self` object is being returned after updating the vector store with the provided instance
     pub fn with_latent_store(mut self, latent_store: LatentStore) -> Self {
-        self.latent_store = latent_store;
+        self.latent_store = Some(latent_store);
+        self
+    }
+
+    /// The `with_latent_store` function sets the latent store and returns the
+    /// modified object.
+    ///
+    /// Arguments:
+    ///
+    /// * `storage_config`: The `storage_configs` parameter is of type Vec of `StorageConfig`. It
+    ///   is used to set the storage configurations by passing a vector of instances of `StorageConfig` to
+    ///   the function.
+    ///
+    /// Returns:
+    ///
+    /// The `self` object is being returned after updating the vector store with the provided instance
+    pub fn with_storage_configs(mut self, storage_configs: Vec<StorageConfig>) -> Self {
+        self.storage_configs = Some(storage_configs);
         self
     }
 
@@ -383,29 +524,29 @@ impl SchemaAnalyzerBuilder {
     ///
     /// A `SchemaAnalyzer` instance is being returned from the `build` function.
     pub fn build(self) -> SchemaAnalyzer {
+        let mut config = self.config.unwrap_or_default();
         assert!(
-            self.config.type_weight
-                + self.config.sample_weight
-                + self.config.name_weight
-                + self.config.structure_weight
+            config.type_weight
+                + config.sample_weight
+                + config.name_weight
+                + config.structure_weight
                 == 1.0,
             "The summation of type_weight, sample weight, name_weight and structure_weight should be 1"
         );
-
-        let mut config = self.config;
 
         match config.top_k {
             Some(v) => {
                 config.top_k = Some(v);
             }
-            None => config.top_k = Some(self.inference_registry.size()),
+            None => config.top_k = Some(self.storage_configs.as_ref().unwrap().len()),
         }
 
         SchemaAnalyzer {
-            name: self.name,
+            name: self.name.unwrap_or("default".to_string()),
             config: Arc::new(config),
-            inference_engine: self.inference_registry,
-            latent_store: Arc::new(self.latent_store),
+            infer_stats: Arc::new(Mutex::new(InferenceStats::default())),
+            latent_store: Arc::new(self.latent_store.unwrap()),
+            storage_configs: self.storage_configs.unwrap(),
         }
     }
 }
@@ -418,19 +559,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_two_silo_probing() {
+        let ls = LatentStore::new(None, None).await.unwrap();
+        let storage_configs = vec![
+            StorageConfig::new_file_backend(StorageBackend::Csv, "./assets/csv").unwrap(),
+            StorageConfig::new_file_backend(StorageBackend::Parquet, "./assets/parquet").unwrap(),
+        ];
+
         // analyzer
-        let analyzer = SchemaAnalyzerBuilder::default().build();
+        let builder = SchemaAnalyzerBuilder::new();
+        let analyzer = builder
+            .with_latent_store(ls)
+            .with_storage_configs(storage_configs)
+            .build();
 
-        let csv_config =
-            StorageConfig::new_file_backend(StorageBackend::Csv, "./assets/csv").unwrap();
-
-        let parquet_config =
-            StorageConfig::new_file_backend(StorageBackend::Parquet, "./assets/parquet").unwrap();
-
-        let result = analyzer
-            .analyze(vec![csv_config, parquet_config])
-            .await
-            .unwrap();
+        let result = analyzer.analyze().await.unwrap();
 
         assert!(result.is_some());
     }

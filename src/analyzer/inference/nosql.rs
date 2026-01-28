@@ -5,26 +5,25 @@ use arrow::{
     },
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
 };
-use futures::{TryStreamExt, executor::block_on};
+use futures::{StreamExt, TryStreamExt, stream};
 use mongodb::{
     Client,
     bson::{Bson, Document, doc},
+    options::ClientOptions,
 };
-use tokio::runtime::Runtime;
 
 use std::{collections::HashMap, sync::Arc};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
     analyzer::{
         catalog::{StorageBackend, StorageConfig},
-        inference::{
-            SchemaInferenceEngine, SourceField, compute_field_metrics, convert_into_table_defs,
-            promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
-        },
+        inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
+        probe::InferenceStats,
     },
     error::NisabaError,
-    types::TableDef,
+    types::{TableDef, TableRep},
 };
 
 // =================================================
@@ -40,7 +39,7 @@ use crate::{
 /// * `sample_size`: The `sample_size` property in `NoSQLInferenceEngine` represents the size
 ///   of the sample data that will be used by the inference engine for analysis.
 pub struct NoSQLInferenceEngine {
-    sample_size: u32,
+    sample_size: usize,
 }
 
 impl Default for NoSQLInferenceEngine {
@@ -50,26 +49,10 @@ impl Default for NoSQLInferenceEngine {
 }
 
 impl NoSQLInferenceEngine {
-    pub fn new() -> Self {
-        NoSQLInferenceEngine::default()
-    }
-
-    /// The `with_sample_size` function sets the sample size for a data structure and returns
-    /// the modified structure.
-    ///
-    /// Arguments:
-    ///
-    /// * `size`: The `size` parameter in the `with_sample_size` function represents the sample size
-    ///   that you want to set for the object. This parameter allows you to specify the size of the samples
-    ///   that will be used in inference.
-    ///
-    /// Returns:
-    ///
-    /// The `self` object is being returned after updating the `sample_size` field with the provided
-    /// `size` value.
-    pub fn with_sample_size(mut self, size: u32) -> Self {
-        self.sample_size = size;
-        self
+    pub fn new(sample_size: Option<usize>) -> Self {
+        NoSQLInferenceEngine {
+            sample_size: sample_size.unwrap_or(1000),
+        }
     }
 
     /// The function `infer_from_mongodb` asynchronously infers table definitions from MongoDB
@@ -83,113 +66,141 @@ impl NoSQLInferenceEngine {
     ///
     /// Returns:
     ///
-    /// The function `infer_from_mongodb` returns a `Result` containing a vector of `TableDef` structs
+    /// The function `mongodb_store_infer` returns a `Result` containing a vector of `TableDef` structs
     /// or a `NisabaError`.
-    async fn infer_from_mongodb(
+    pub async fn mongodb_store_infer<F, Fut>(
         &self,
         config: &StorageConfig,
-    ) -> Result<Vec<TableDef>, NisabaError> {
+        infer_stats: Arc<Mutex<InferenceStats>>,
+        on_table: Arc<F>,
+    ) -> Result<Vec<TableRep>, NisabaError>
+    where
+        F: Fn(Vec<TableDef>) -> Fut + Sync,
+        Fut: Future<Output = Result<(), NisabaError>> + Send,
+    {
         let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
         let conn_str = config.connection_string()?;
         let db_name = config.clone().database.unwrap();
 
-        let rt = Runtime::new()?;
+        let mut client_options = ClientOptions::parse(conn_str).await?;
+        client_options.min_pool_size = Some(5);
+        client_options.max_pool_size = Some(50);
+        let client = Client::with_options(client_options)?;
 
-        let table_defs: Result<Vec<TableDef>, NisabaError> = rt.block_on(async {
-            let client = Client::with_uri_str(conn_str).await?;
+        // let client = Client::with_uri_str(conn_str).await?;
 
-            let db = client.database(&db_name);
-            let collections = db.list_collection_names().await?;
+        let db = client.database(&db_name);
+        let collections = db.list_collection_names().await?;
 
-            let mut table_defs: Vec<TableDef> = Vec::new();
+        // let mut table_reps_results: Vec<Result<TableRep, NisabaError>> = Vec::new();
 
-            for collection_name in collections {
-                let collection = db.collection::<Document>(&collection_name);
-                let cursor = collection
-                    .find(doc! {})
-                    .limit(i64::from(self.sample_size))
-                    .await?;
+        let table_reps_results: Vec<Result<TableRep, NisabaError>> = stream::iter(collections)
+            .map(|collection_name| {
+                let shared_db = db.clone();
+                let db_name = db_name.clone();
+                let silo_id = silo_id.clone();
+                let infer_stats = infer_stats.clone();
+                let on_table = on_table.clone();
 
-                let docs: Vec<Document> = cursor.try_collect().await?;
+                async move {
+                    let collection = shared_db.collection::<Document>(&collection_name);
+                    let cursor = collection
+                        .find(doc! {})
+                        .limit(self.sample_size as i64)
+                        .await?;
 
-                let (result, schema) =
-                    self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
+                    let docs: Vec<Document> = cursor.try_collect().await?;
 
-                let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
+                    let (result, schema) =
+                        self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
 
-                let mut table_def = convert_into_table_defs(result)?;
+                    let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
 
-                // Promotion
+                    let table_def = convert_into_table_defs(result)?;
 
-                for (index, field) in schema.fields().iter().enumerate() {
-                    let column = batch.column(index);
-
-                    match column.data_type() {
-                        DataType::LargeUtf8
-                        | DataType::Utf8
-                        | DataType::Int32
-                        | DataType::Int64 => {
-                            let stats = ColumnStats::new(column);
-                            let resolver = TypeLatticeResolver::new();
-                            let resolved_result = resolver.promote(column.data_type(), &stats)?;
-
-                            if let Some(ff) = table_def[0]
-                                .fields
-                                .iter_mut()
-                                .find(|f| f.name == *field.name())
-                            {
-                                ff.type_confidence = Some(resolved_result.confidence);
-
-                                // Update char_max_length
-                                match (&ff.canonical_type, &resolved_result.dest_type) {
-                                    (DataType::Utf8, DataType::Utf8)
-                                    | (DataType::LargeUtf8, DataType::LargeUtf8)
-                                    | (DataType::Utf8View, DataType::Utf8View) => {
-                                        ff.char_max_length =
-                                            resolved_result.character_maximum_length;
-                                    }
-
-                                    (_, _) => {}
-                                }
-
-                                // Update type related signals when there is a mismatch on types
-                                if ff.canonical_type != resolved_result.dest_type {
-                                    ff.canonical_type = resolved_result.dest_type;
-                                    ff.type_confidence = Some(resolved_result.confidence);
-                                    ff.is_nullable = resolved_result.nullable;
-                                    ff.char_max_length = resolved_result.character_maximum_length;
-                                    ff.numeric_precision = resolved_result.numeric_precision;
-                                    ff.numeric_scale = resolved_result.numeric_scale;
-                                    ff.datetime_precision = resolved_result.datetime_precision;
-
-                                    // Very important for field values in batch to be updated
-                                    cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
-                                }
-                            }
-                        }
-                        _ => {}
+                    {
+                        let mut stats = infer_stats.lock().await;
+                        stats.tables_processed += table_def.len();
                     }
+
+                    let mut table_def = table_def
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
+
+                    // Promotion
+                    self.enrich_table_def(&mut table_def, &mut batch)?;
+
+                    on_table(vec![table_def.clone()]).await?;
+
+                    Ok::<TableRep, NisabaError>((&table_def).into())
                 }
+            })
+            .buffer_unordered(4)
+            .collect()
+            .await;
 
-                let metrics = compute_field_metrics(&batch)?;
+        // for collection_name in collections {
+        //     let result = async {
+        //         let collection = db.collection::<Document>(&collection_name);
+        //         let cursor = collection
+        //             .find(doc! {})
+        //             .limit(self.sample_size as i64)
+        //             .await?;
 
-                let _ = table_def[0].fields.iter_mut().map(|f| {
-                    let fmetrics = metrics.get(&f.name);
+        //         let docs: Vec<Document> = cursor.try_collect().await?;
 
-                    if let Some(m) = fmetrics {
-                        f.char_class_signature = Some(m.char_class_signature);
-                        f.is_monotonic = m.monotonicity;
-                        f.cardinality = Some(m.cardinality);
-                        f.avg_byte_length = m.avg_byte_length
-                    }
-                });
+        //         let (result, schema) =
+        //             self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
 
-                table_defs.extend(table_def);
+        //         let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
+
+        //         let table_def = convert_into_table_defs(result)?;
+
+        //         {
+        //             let mut stats = infer_stats.lock().unwrap();
+        //             stats.tables_processed += table_def.len();
+        //         }
+
+        //         let mut table_def = table_def
+        //             .into_iter()
+        //             .next()
+        //             .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
+
+        //         // Promotion
+        //         self.enrich_table_def(&mut table_def, &mut batch)?;
+
+        //         on_table(vec![table_def.clone()]).await?;
+
+        //         Ok::<TableRep, NisabaError>((&table_def).into())
+        //     }
+        //     .await;
+
+        //     table_reps_results.push(result);
+        // }
+
+        let mut errors = Vec::new();
+        let mut table_reps = Vec::new();
+
+        for result in table_reps_results {
+            match result {
+                Ok(rep) => {
+                    table_reps.push(rep);
+                }
+                Err(e) => errors.push(e.to_string()),
             }
-            Ok(table_defs)
-        });
+        }
 
-        table_defs
+        {
+            let mut stats = infer_stats.lock().await;
+            stats.errors.extend(errors);
+
+            stats.tables_inferred += table_reps.len();
+
+            stats.fields_inferred += table_reps.iter().map(|t| t.fields.len()).sum::<usize>();
+        }
+
+        Ok(table_reps)
     }
 
     /// The `mongo_collection_infer` function infers field types from MongoDB documents and
@@ -396,26 +407,6 @@ impl NoSQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for NoSQLInferenceEngine {
-    /// The `infer_schema` function infers table schema from a MongoDB backend.
-    ///
-    /// Arguments:
-    ///
-    /// * `config`: The `config` parameter is of type `StorageConfig`, which contains
-    ///   configuration settings for the storage backend being used.
-    ///
-    /// Returns:
-    ///
-    /// A `Result` containing either a vector of `TableDef` or a `NisabaError` is being returned.
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
-        match config.backend {
-            StorageBackend::MongoDB => block_on(self.infer_from_mongodb(config)),
-            _ => Err(NisabaError::Unsupported(format!(
-                "{:?} NoSQL store provided unsupported by NoSQL engine",
-                config.backend
-            ))),
-        }
-    }
-
     /// The function `can_handle` checks if the provided `StorageBackend` is `MongoDB`.
     ///
     /// Arguments:
@@ -432,7 +423,7 @@ impl SchemaInferenceEngine for NoSQLInferenceEngine {
     }
 
     fn engine_name(&self) -> &str {
-        "NoSQL-MongDB"
+        "mongodb"
     }
 }
 
@@ -529,10 +520,13 @@ fn merge_types(type_a: &DataType, type_b: &DataType) -> DataType {
 
 #[cfg(test)]
 mod tests {
+
+    use crate::{AnalyzerConfig, LatentStore, types::FieldDef};
+
     use super::*;
 
-    #[test]
-    fn test_mongo_inference() {
+    #[tokio::test]
+    async fn test_mongo_inference() {
         let config = StorageConfig::new_network_backend(
             StorageBackend::MongoDB,
             "localhost",
@@ -544,9 +538,33 @@ mod tests {
         )
         .unwrap();
 
+        let stats = Arc::new(Mutex::new(InferenceStats::default()));
+
+        let latent_store = Arc::new(LatentStore::new(None, None).await.unwrap());
+
+        let table_handler =
+            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+
+        table_handler.initialize().await.unwrap();
+
+        let field_handler =
+            latent_store.table_handler::<FieldDef>(Arc::new(AnalyzerConfig::default()));
+
+        field_handler.initialize().await.unwrap();
+
         let nosql_inference = NoSQLInferenceEngine::default();
 
-        let result = block_on(nosql_inference.infer_from_mongodb(&config)).unwrap();
+        let result = nosql_inference
+            .mongodb_store_infer(
+                &config,
+                stats,
+                Arc::new(|table_defs| async {
+                    table_handler.store_tables(table_defs).await?;
+                    Ok(())
+                }),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 9);
     }

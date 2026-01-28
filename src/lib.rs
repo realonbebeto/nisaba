@@ -9,8 +9,9 @@ pub use analyzer::{
     AnalyzerConfig, SchemaAnalyzerBuilder,
     catalog::{StorageBackend, StorageConfig},
     inference::{
-        FileInferenceEngine, InferenceEngineRegistry, NoSQLInferenceEngine, SQLInferenceEngine,
-        SchemaInferenceEngine,
+        CsvInferenceEngine, ExcelInferenceEngine, MySQLInferenceEngine, NoSQLInferenceEngine,
+        ParquetInferenceEngine, PostgreSQLInferenceEngine, SchemaInferenceEngine,
+        SqliteInferenceEngine,
     },
     retriever::LatentStore,
 };

@@ -1,14 +1,11 @@
-use std::sync::Arc;
-
 use arrow::{
     array::{
-        Array, ArrayBuilder, ArrayRef, ArrowPrimitiveType, BinaryBuilder, BooleanBuilder,
-        Date32Builder, Date64Builder, Decimal128Builder, FixedSizeBinaryBuilder,
-        FixedSizeListBuilder, Float16Builder, Float32Builder, Float64Array, Float64Builder,
-        Int8Builder, Int16Builder, Int32Builder, Int64Builder, PrimitiveBuilder, RecordBatch,
-        StringBuilder, Time32MillisecondBuilder, Time64MicrosecondBuilder,
-        TimestampMicrosecondBuilder, TimestampMillisecondBuilder, TimestampNanosecondBuilder,
-        TimestampSecondBuilder,
+        ArrayBuilder, ArrayRef, ArrowPrimitiveType, BinaryBuilder, BooleanBuilder, Date32Builder,
+        Date64Builder, Decimal128Builder, FixedSizeBinaryBuilder, FixedSizeListBuilder,
+        Float16Builder, Float32Builder, Float64Builder, Int8Builder, Int16Builder, Int32Builder,
+        Int64Builder, PrimitiveBuilder, RecordBatch, StringBuilder, Time32MillisecondBuilder,
+        Time64MicrosecondBuilder, TimestampMicrosecondBuilder, TimestampMillisecondBuilder,
+        TimestampNanosecondBuilder, TimestampSecondBuilder,
     },
     datatypes::{
         DataType, Field, Int8Type, Int16Type, Int32Type, Int64Type, Time64MicrosecondType,
@@ -18,81 +15,81 @@ use arrow::{
     error::ArrowError,
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
-use futures::executor::block_on;
+use futures::{StreamExt, stream};
 use sqlx::{MySqlPool, PgPool, Row, SqlitePool};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::{
     analyzer::{
         catalog::{StorageBackend, StorageConfig},
         inference::{
-            SchemaInferenceEngine, SourceField, compute_field_metrics, convert_into_table_defs,
-            promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
-            table_def_to_arrow_schema,
+            SchemaInferenceEngine, SourceField, convert_into_table_defs, table_def_to_arrow_schema,
         },
+        probe::InferenceStats,
     },
     error::NisabaError,
-    types::TableDef,
+    types::{TableDef, TableRep},
 };
-
 // =================================================
 // SQL-Like Inference Engine
 // =================================================
+/// SQL inference engines for common OLTPs
 
-/// SQL inference engine for common OLTPs
+// =================================================
+// MySQL Inference Engine
+// =================================================
 #[derive(Debug)]
-pub struct SQLInferenceEngine {
+pub struct MySQLInferenceEngine {
     sample_size: usize,
 }
 
-impl Default for SQLInferenceEngine {
+impl Default for MySQLInferenceEngine {
     fn default() -> Self {
         Self { sample_size: 1000 }
     }
 }
 
-impl SQLInferenceEngine {
-    pub fn new() -> Self {
-        SQLInferenceEngine::default()
+impl MySQLInferenceEngine {
+    pub fn new(sample_size: Option<usize>) -> Self {
+        MySQLInferenceEngine {
+            sample_size: sample_size.unwrap_or(1000),
+        }
     }
 
-    /// The `with_sample_size` function sets the sample size that will be used for inference
-    ///
-    /// Arguments:
-    ///
-    /// * `size`: The `size` parameter in the `with_sample_size` function represents the sample size
-    ///   that is desired to be used for inference purposes.
-    ///
-    /// Returns:
-    ///
-    /// The `self` object is being returned after setting the `sample_size` field to the provided `size`
-    /// value.
-    pub fn with_sample_size(mut self, size: usize) -> Self {
-        self.sample_size = size;
-        self
-    }
-
-    /// The function `infer_from_mysql` asynchronously reads table fields from a MySQL database,
+    /// The function `mysql_store_infer` asynchronously reads table fields from a MySQL database,
     /// converts them into table definitions, enriches the definitions with various metrics, and returns
     /// the resulting table definitions.
     ///
     /// Arguments:
     ///
-    /// * `config`: The `config` parameter in the `infer_from_mysql` function is of type
+    /// * `config`: The `config` parameter in the `mysql_store_infer` function is of type
     ///   `&StorageConfig`, which is a reference to a `StorageConfig` struct. This parameter is used to
     ///   provide configuration details for connecting to a MySQL database, such as the connection string.
     ///
     /// Returns:
     ///
-    /// The function `infer_from_mysql` returns a `Result` containing a vector of `TableDef` structs or
+    /// The function `mysql_store_infer` returns a `Result` containing a vector of `TableDef` structs or
     /// a `NisabaError` if an error occurs during the process.
-    async fn infer_from_mysql(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
+    pub async fn mysql_store_infer<F, Fut>(
+        &self,
+        config: &StorageConfig,
+        infer_stats: Arc<Mutex<InferenceStats>>,
+        on_table: F,
+    ) -> Result<Vec<TableRep>, NisabaError>
+    where
+        F: Fn(Vec<TableDef>) -> Fut + Sync,
+        Fut: Future<Output = Result<(), NisabaError>> + Send,
+    {
         let conn_str = config.connection_string()?;
 
         let pool = MySqlPool::connect(&conn_str).await?;
 
         let source_fields = read_mysql_fields(&pool, config).await?;
 
-        let mut table_defs = convert_into_table_defs(source_fields)?;
+        let table_defs = convert_into_table_defs(source_fields)?;
+
+        let total_tables_p = table_defs.len();
 
         // Enriching
         // 1. type_confidence
@@ -101,91 +98,224 @@ impl SQLInferenceEngine {
         // 4. is_monotonic
         // 5. char_class_signature
 
-        for table_def in &mut table_defs {
-            let data = read_mysql_table(&pool, table_def, self.sample_size).await?;
+        let table_results = stream::iter(table_defs)
+            .map(|mut table_def| {
+                let shared_pool = pool.clone();
 
-            if let Some(batch) = data {
-                let metrics = compute_field_metrics(&batch)?;
+                async move {
+                    let data = read_mysql_table(&shared_pool, &table_def, self.sample_size).await?;
 
-                let _ = table_def.fields.iter_mut().map(|f| {
-                    let fmetrics = metrics.get(&f.name);
-                    f.enrich_from_arrow(fmetrics);
-                    f.type_confidence = Some(1.0);
-                });
+                    if let Some(mut batch) = data {
+                        self.enrich_table_def(&mut table_def, &mut batch)?;
+                    }
+
+                    let table_rep: TableRep = (&table_def).into();
+
+                    Ok::<_, NisabaError>((table_rep, table_def))
+                }
+            })
+            .buffer_unordered(3)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut errors = Vec::new();
+        let mut table_defs = Vec::new();
+        let mut table_reps = Vec::new();
+
+        for result in table_results {
+            match result {
+                Ok((rep, def)) => {
+                    table_reps.push(rep);
+                    table_defs.push(def);
+                }
+                Err(e) => errors.push(e.to_string()),
             }
         }
 
-        Ok(table_defs)
+        {
+            let mut stats = infer_stats.lock().await;
+            stats.errors.extend(errors);
+
+            stats.tables_inferred += table_reps.len();
+
+            stats.tables_processed += total_tables_p;
+
+            stats.fields_inferred += table_reps.iter().map(|t| t.fields.len()).sum::<usize>();
+        }
+
+        on_table(table_defs).await?;
+
+        Ok(table_reps)
+    }
+}
+
+impl SchemaInferenceEngine for MySQLInferenceEngine {
+    fn can_handle(&self, backend: &StorageBackend) -> bool {
+        matches!(backend, StorageBackend::MySQL)
     }
 
-    /// The function `infer_from_postgres` reads table definitions from a PostgreSQL database, enriches
+    fn engine_name(&self) -> &str {
+        "mysql"
+    }
+}
+
+// =================================================
+// PostgreSQL Inference Engine
+// =================================================
+#[derive(Debug)]
+pub struct PostgreSQLInferenceEngine {
+    sample_size: usize,
+}
+
+impl Default for PostgreSQLInferenceEngine {
+    fn default() -> Self {
+        Self { sample_size: 1000 }
+    }
+}
+
+impl PostgreSQLInferenceEngine {
+    pub fn new(sample_size: Option<usize>) -> Self {
+        PostgreSQLInferenceEngine {
+            sample_size: sample_size.unwrap_or(1000),
+        }
+    }
+    /// The function `postgres_store_infer` reads table definitions from a PostgreSQL database, enriches
     /// them with additional metrics, and returns the resulting table definitions.
     ///
     /// Arguments:
     ///
-    /// * `config`: The `config` parameter in the `infer_from_postgres` function is of type
-    ///   `&StorageConfig`, which is a reference to a `StorageConfig` struct. This parameter is used to
+    /// * `config`: The `config` parameter is of type `&StorageConfig` and is used to
     ///   provide configuration details for connecting to a PostgreSQL database.
     ///
     /// Returns:
     ///
-    /// The `infer_from_postgres` function returns a `Result` containing a vector of `TableDef` structs
+    /// The `postgres_store_infer` function returns a `Result` containing a vector of `TableRep` structs
     /// or a `NisabaError` if an error occurs during the process.
-    async fn infer_from_postgres(
+    pub async fn postgres_store_infer<F, Fut>(
         &self,
         config: &StorageConfig,
-    ) -> Result<Vec<TableDef>, NisabaError> {
+        infer_stats: Arc<Mutex<InferenceStats>>,
+        on_table: F,
+    ) -> Result<Vec<TableRep>, NisabaError>
+    where
+        F: Fn(Vec<TableDef>) -> Fut + Sync,
+        Fut: Future<Output = Result<(), NisabaError>> + Send,
+    {
         let conn_str = config.connection_string()?;
 
         let pool = PgPool::connect(&conn_str).await?;
 
         let source_fields = read_postgres_fields(&pool, config).await?;
 
-        let mut table_defs = convert_into_table_defs(source_fields)?;
+        let table_defs = convert_into_table_defs(source_fields)?;
 
-        // Enriching
-        // 1. type_confidence
-        // 2. cardinality
-        // 3. avg_byte_length
-        // 4. is_monotonic
-        // 5. char_class_signature
+        let total_tables_p = table_defs.len();
 
-        for table_def in &mut table_defs {
-            let data = read_postgres_table(&pool, table_def, self.sample_size).await?;
+        let table_results = stream::iter(table_defs)
+            .map(|mut table_def| {
+                let shared_pool = pool.clone();
 
-            if let Some(batch) = data {
-                let metrics = compute_field_metrics(&batch)?;
+                async move {
+                    let data =
+                        read_postgres_table(&shared_pool, &table_def, self.sample_size).await?;
 
-                let _ = table_def.fields.iter_mut().map(|f| {
-                    let fmetrics = metrics.get(&f.name);
-                    f.enrich_from_arrow(fmetrics);
-                    f.type_confidence = Some(1.0);
-                });
+                    if let Some(mut batch) = data {
+                        self.enrich_table_def(&mut table_def, &mut batch)?;
+                    }
+
+                    let table_rep: TableRep = (&table_def).into();
+
+                    Ok::<_, NisabaError>((table_rep, table_def))
+                }
+            })
+            .buffer_unordered(3)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut errors = Vec::new();
+        let mut table_defs = Vec::new();
+        let mut table_reps = Vec::new();
+
+        for result in table_results {
+            match result {
+                Ok((rep, def)) => {
+                    table_reps.push(rep);
+                    table_defs.push(def);
+                }
+                Err(e) => errors.push(e.to_string()),
             }
         }
 
-        Ok(table_defs)
+        {
+            let mut stats = infer_stats.lock().await;
+            stats.errors.extend(errors);
+
+            stats.tables_inferred += table_reps.len();
+
+            stats.tables_processed += total_tables_p;
+
+            stats.fields_inferred += table_reps.iter().map(|t| t.fields.len()).sum::<usize>();
+        }
+
+        on_table(table_defs).await?;
+
+        Ok(table_reps)
+    }
+}
+
+impl SchemaInferenceEngine for PostgreSQLInferenceEngine {
+    fn can_handle(&self, backend: &StorageBackend) -> bool {
+        matches!(backend, StorageBackend::PostgreSQL)
     }
 
+    fn engine_name(&self) -> &str {
+        "postgresql"
+    }
+}
+
+// =================================================
+// PostgreSQL Inference Engine
+// =================================================
+#[derive(Debug)]
+pub struct SqliteInferenceEngine {
+    sample_size: usize,
+}
+
+impl Default for SqliteInferenceEngine {
+    fn default() -> Self {
+        Self { sample_size: 1000 }
+    }
+}
+
+impl SqliteInferenceEngine {
+    pub fn new(sample_size: Option<usize>) -> Self {
+        Self {
+            sample_size: sample_size.unwrap_or(1000),
+        }
+    }
     /// The function `infer_from_sqlite` asynchronously reads data from a SQLite database,
     /// processes and enriches the data by inferring types and other metrics for each table, and returns
     /// a vector of `TableDef` structs.
     ///
     /// Arguments:
     ///
-    /// * `config`: The `config` parameter in the `infer_from_sqlite` function is of type
-    ///   `&StorageConfig`, which is a reference to a `StorageConfig` struct. This parameter is used to
-    ///   provide configuration settings for the storage connection, such as the connection string needed
-    ///   to establish a connection to the SQLite instance.
+    /// * `config`: The `config` parameter  is of type `&StorageConfig`and used to
+    ///   provide configuration settings for a SQLite instance.
     ///
     /// Returns:
     ///
     /// The function `infer_from_sqlite` returns a `Result` containing a vector of `TableDef` structs or
     /// a `NisabaError` if an error occurs during the execution.
-    async fn infer_from_sqlite(
+    pub async fn sqlite_store_infer<F, Fut>(
         &self,
         config: &StorageConfig,
-    ) -> Result<Vec<TableDef>, NisabaError> {
+        infer_stats: Arc<Mutex<InferenceStats>>,
+        on_table: F,
+    ) -> Result<Vec<TableRep>, NisabaError>
+    where
+        F: Fn(Vec<TableDef>) -> Fut + Sync,
+        Fut: Future<Output = Result<(), NisabaError>> + Send,
+    {
         let conn_str = config.connection_string()?;
 
         let pool = SqlitePool::connect(&conn_str).await?;
@@ -193,172 +323,63 @@ impl SQLInferenceEngine {
         // Execute query and create result set
         let source_fields = read_sqlite_fields(&pool, config).await?;
 
-        let mut table_defs = convert_into_table_defs(source_fields)?;
+        let table_defs = convert_into_table_defs(source_fields)?;
 
-        // Enriching
-        // 1. Type promotion and type confidence
-        // 2. cardinality
-        // 3. avg_byte_length
-        // 4. is_monotonic
-        // 5. char_class_signature
-        // 6. char_max_length
-        // 7. numeric_precision
-        // 8. numeric_scale
-        // 9. datetime_precision
+        let total_tables_p = table_defs.len();
 
-        for table_def in &mut table_defs {
-            let data = read_sqlite_table(&pool, table_def, self.sample_size).await?;
+        let table_results = stream::iter(table_defs)
+            .map(|mut table_def| {
+                let shared_pool = pool.clone();
 
-            if let Some(mut batch) = data {
-                // Promotion
-                let schema = batch.schema();
+                async move {
+                    let data =
+                        read_sqlite_table(&shared_pool, &table_def, self.sample_size).await?;
 
-                for (index, field) in schema.fields().iter().enumerate() {
-                    let mut column = batch.column(index).clone();
-                    // Handling Boolean/Int64 from f64
-                    if column.data_type() == &DataType::Float64 {
-                        let arr = column.as_any().downcast_ref::<Float64Array>().ok_or(
-                            ArrowError::CastError("Failed to cast to Float64Array".into()),
-                        )?;
-
-                        if arr
-                            .iter()
-                            .flatten()
-                            .collect::<Vec<f64>>()
-                            .iter()
-                            .all(|val| val.is_finite() && (*val == 0.0 || *val == 1.0))
-                        {
-                            let mut builder = BooleanBuilder::new();
-                            for index in 0..arr.len() {
-                                if arr.is_null(index) {
-                                    builder.append_null();
-                                } else {
-                                    builder.append_value(arr.value(index) != 0.0);
-                                }
-                            }
-                            column = Arc::new(builder.finish());
-                        } else if arr
-                            .iter()
-                            .flatten()
-                            .collect::<Vec<f64>>()
-                            .iter()
-                            .all(|val| {
-                                val.is_finite()
-                                    && val.fract().abs() < f64::MIN_POSITIVE
-                                    && val.abs() < i64::MAX as f64
-                            })
-                        {
-                            let mut builder = Int64Builder::new();
-
-                            for index in 0..arr.len() {
-                                if arr.is_null(index) {
-                                    builder.append_null();
-                                } else {
-                                    builder.append_value(arr.value(index) as i64);
-                                }
-                            }
-
-                            column = Arc::new(builder.finish());
-                        }
-
-                        if let Some(ff) = table_def
-                            .fields
-                            .iter_mut()
-                            .find(|f| f.name == *field.name())
-                        {
-                            ff.canonical_type = column.data_type().clone();
-                        }
+                    if let Some(mut batch) = data {
+                        self.enrich_table_def(&mut table_def, &mut batch)?;
                     }
 
-                    match column.data_type() {
-                        DataType::LargeUtf8
-                        | DataType::Utf8
-                        | DataType::Int32
-                        | DataType::Int64 => {
-                            let stats = ColumnStats::new(&column);
-                            let resolver = TypeLatticeResolver::new();
-                            let resolved_result = resolver.promote(column.data_type(), &stats)?;
+                    let table_rep: TableRep = (&table_def).into();
 
-                            if let Some(ff) = table_def
-                                .fields
-                                .iter_mut()
-                                .find(|f| f.name == *field.name())
-                            {
-                                ff.type_confidence = Some(resolved_result.confidence);
-
-                                // Update char_max_length
-                                match (&ff.canonical_type, &resolved_result.dest_type) {
-                                    (DataType::Utf8, DataType::Utf8)
-                                    | (DataType::LargeUtf8, DataType::LargeUtf8)
-                                    | (DataType::Utf8View, DataType::Utf8View) => {
-                                        ff.char_max_length =
-                                            resolved_result.character_maximum_length;
-                                    }
-
-                                    (_, _) => {}
-                                }
-                                if ff.canonical_type != resolved_result.dest_type {
-                                    ff.canonical_type = resolved_result.dest_type;
-                                    ff.type_confidence = Some(resolved_result.confidence);
-                                    ff.is_nullable = resolved_result.nullable;
-                                    ff.char_max_length = resolved_result.character_maximum_length;
-                                    ff.numeric_precision = resolved_result.numeric_precision;
-                                    ff.numeric_scale = resolved_result.numeric_scale;
-                                    ff.datetime_precision = resolved_result.datetime_precision;
-
-                                    // Very important for field values in batch to be updated
-                                    cast_utf8_column(&mut batch, &ff.name, &ff.canonical_type)?;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
+                    Ok::<_, NisabaError>((table_rep, table_def))
                 }
+            })
+            .buffer_unordered(3)
+            .collect::<Vec<_>>()
+            .await;
 
-                let metrics = compute_field_metrics(&batch)?;
+        let mut errors = Vec::new();
+        let mut table_defs = Vec::new();
+        let mut table_reps = Vec::new();
 
-                let _ = table_def.fields.iter_mut().map(|f| {
-                    let fmetrics = metrics.get(&f.name);
-
-                    if let Some(m) = fmetrics {
-                        f.char_class_signature = Some(m.char_class_signature);
-                        f.is_monotonic = m.monotonicity;
-                        f.cardinality = Some(m.cardinality);
-                        f.avg_byte_length = m.avg_byte_length
-                    }
-                });
+        for result in table_results {
+            match result {
+                Ok((rep, def)) => {
+                    table_reps.push(rep);
+                    table_defs.push(def);
+                }
+                Err(e) => errors.push(e.to_string()),
             }
         }
 
-        Ok(table_defs)
+        {
+            let mut stats = infer_stats.lock().await;
+            stats.errors.extend(errors);
+
+            stats.tables_inferred += table_reps.len();
+
+            stats.tables_processed += total_tables_p;
+
+            stats.fields_inferred += table_reps.iter().map(|t| t.fields.len()).sum::<usize>();
+        }
+
+        on_table(table_defs).await?;
+
+        Ok(table_reps)
     }
 }
 
-impl SchemaInferenceEngine for SQLInferenceEngine {
-    /// The `infer_schema` function infers the schema of a database table based on the specified
-    /// storage configuration.
-    ///
-    /// Arguments:
-    ///
-    /// * `config`: The `config` parameter is of type `StorageConfig`, contains information
-    ///   about the storage configuration such as the backend being used (MySQL, PostgreSQL, SQLite).
-    ///
-    /// Returns:
-    ///
-    /// The `infer_schema` function returns a `Result` containing a vector of `TableDef` structs or a
-    /// `NisabaError` if an error occurs during the schema inference process.
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
-        match config.backend {
-            StorageBackend::MySQL => block_on(self.infer_from_mysql(config)),
-            StorageBackend::PostgreSQL => block_on(self.infer_from_postgres(config)),
-            StorageBackend::SQLite => block_on(self.infer_from_sqlite(config)),
-            _ => Err(NisabaError::Unsupported(format!(
-                "{:?} SQL store provided unsupported by SQL engine",
-                config.backend
-            ))),
-        }
-    }
-
+impl SchemaInferenceEngine for SqliteInferenceEngine {
     fn can_handle(&self, backend: &StorageBackend) -> bool {
         matches!(
             backend,
@@ -367,7 +388,7 @@ impl SchemaInferenceEngine for SQLInferenceEngine {
     }
 
     fn engine_name(&self) -> &str {
-        "SQL"
+        "sqlite"
     }
 }
 
@@ -1449,10 +1470,13 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    use crate::{AnalyzerConfig, LatentStore, types::FieldDef};
+
     use super::*;
 
-    #[test]
-    fn test_mysql_inference() {
+    #[tokio::test]
+    async fn test_mysql_inference() {
         let config = StorageConfig::new_network_backend(
             StorageBackend::MySQL,
             "localhost",
@@ -1464,15 +1488,35 @@ mod tests {
         )
         .unwrap();
 
-        let sql_inference = SQLInferenceEngine::default();
+        let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let result = block_on(sql_inference.infer_from_mysql(&config)).unwrap();
+        let latent_store = Arc::new(LatentStore::new(None, None).await.unwrap());
+
+        let table_handler =
+            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+
+        table_handler.initialize().await.unwrap();
+
+        let field_handler =
+            latent_store.table_handler::<FieldDef>(Arc::new(AnalyzerConfig::default()));
+
+        field_handler.initialize().await.unwrap();
+
+        let sql_inference = MySQLInferenceEngine::default();
+
+        let result = sql_inference
+            .mysql_store_infer(&config, stats, |table_defs| async {
+                table_handler.store_tables(table_defs).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 9);
     }
 
-    #[test]
-    fn test_postgresql_inference() {
+    #[tokio::test]
+    async fn test_postgresql_inference() {
         let config = StorageConfig::new_network_backend(
             StorageBackend::PostgreSQL,
             "localhost",
@@ -1484,24 +1528,64 @@ mod tests {
         )
         .unwrap();
 
-        let sql_inference = SQLInferenceEngine::default();
+        let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let result = block_on(sql_inference.infer_from_postgres(&config)).unwrap();
+        let latent_store = Arc::new(LatentStore::new(None, None).await.unwrap());
+
+        let table_handler =
+            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+
+        table_handler.initialize().await.unwrap();
+
+        let field_handler =
+            latent_store.table_handler::<FieldDef>(Arc::new(AnalyzerConfig::default()));
+
+        field_handler.initialize().await.unwrap();
+
+        let sql_inference = PostgreSQLInferenceEngine::default();
+
+        let result = sql_inference
+            .postgres_store_infer(&config, stats, |table_defs| async {
+                table_handler.store_tables(table_defs).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 9);
     }
 
-    #[test]
-    fn test_sqlite_inference() {
+    #[tokio::test]
+    async fn test_sqlite_inference() {
         let config = StorageConfig::new_file_backend(
             StorageBackend::SQLite,
             "./assets/sqlite/nisaba.sqlite",
         )
         .unwrap();
 
-        let sql_inference = SQLInferenceEngine::default();
+        let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let result = block_on(sql_inference.infer_from_sqlite(&config)).unwrap();
+        let latent_store = Arc::new(LatentStore::new(None, None).await.unwrap());
+
+        let table_handler =
+            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+
+        table_handler.initialize().await.unwrap();
+
+        let field_handler =
+            latent_store.table_handler::<FieldDef>(Arc::new(AnalyzerConfig::default()));
+
+        field_handler.initialize().await.unwrap();
+
+        let sql_inference = SqliteInferenceEngine::default();
+
+        let result = sql_inference
+            .sqlite_store_infer(&config, stats, |table_defs| async {
+                table_handler.store_tables(table_defs).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 9);
     }
