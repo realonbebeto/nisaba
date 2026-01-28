@@ -197,8 +197,8 @@ impl SchemaAnalyzer {
         clusters: &mut [TableCluster],
         table_reps: &[TableRep],
     ) -> Result<(), NisabaError> {
-        let mut cached_candidates = HashSet::new();
         for tbl_cluster in clusters {
+            let mut cached_candidates = HashSet::new();
             let table_ids: Vec<Uuid> = tbl_cluster.tables.iter().map(|v| v.id).collect();
 
             let field_defs = table_reps
