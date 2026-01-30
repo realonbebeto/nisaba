@@ -31,17 +31,17 @@ use crate::{
 // CSV Inference Engine
 // =================================================
 #[derive(Debug)]
-pub struct CsvInferenceEngine {
-    sample_size: usize,
-    csv_has_header: bool,
+pub struct CsvInferenceEngine;
+
+impl Default for CsvInferenceEngine {
+    fn default() -> Self {
+        CsvInferenceEngine
+    }
 }
 
 impl CsvInferenceEngine {
-    pub fn new(sample_size: Option<usize>, csv_has_header: Option<bool>) -> Self {
-        Self {
-            sample_size: sample_size.unwrap_or(1000),
-            csv_has_header: csv_has_header.unwrap_or(true),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn csv_store_infer<F, Fut>(
@@ -82,7 +82,7 @@ impl CsvInferenceEngine {
                         stats.tables_found += 1;
                     }
 
-                    match self.infer_single_csv(path, &source.metadata.silo_id) {
+                    match self.infer_single_csv(path, source) {
                         Ok(table_def) => {
                             {
                                 let mut stats = rt.block_on(infer_stats.lock());
@@ -111,19 +111,19 @@ impl CsvInferenceEngine {
         Ok(table_reps.into_inner())
     }
 
-    fn infer_single_csv(&self, path: &PathBuf, silo_id: &str) -> Result<TableDef, NisabaError> {
+    fn infer_single_csv(&self, path: &PathBuf, source: &Source) -> Result<TableDef, NisabaError> {
         let mut file = File::open(path)?;
 
         // 1. Infer schema from file
         let (schema, _) = Format::default()
-            .with_header(self.csv_has_header)
-            .infer_schema(&mut file, Some(self.sample_size))?;
+            .with_header(source.metadata.has_header)
+            .infer_schema(&mut file, Some(source.metadata.num_rows))?;
 
         file.rewind()?;
 
         // 2. Read batch for stats and promotion(inference)
         let mut csv_reader = ReaderBuilder::new(Arc::new(schema.clone()))
-            .with_header(self.csv_has_header)
+            .with_header(source.metadata.has_header)
             .build(file)?;
 
         let record_batch = csv_reader.next();
@@ -139,7 +139,7 @@ impl CsvInferenceEngine {
             .fields()
             .iter()
             .map(|f| SourceField {
-                silo_id: silo_id.to_string(),
+                silo_id: source.metadata.silo_id.clone(),
                 table_schema: "csv".into(),
                 table_name: table_name.clone(),
                 column_name: f.name().clone(),
@@ -183,17 +183,17 @@ impl SchemaInferenceEngine for CsvInferenceEngine {
 // Excel Inference Engine
 // =================================================
 #[derive(Debug)]
-pub struct ExcelInferenceEngine {
-    sample_size: usize,
-    excel_has_header: bool,
+pub struct ExcelInferenceEngine;
+
+impl Default for ExcelInferenceEngine {
+    fn default() -> Self {
+        ExcelInferenceEngine
+    }
 }
 
 impl ExcelInferenceEngine {
-    pub fn new(sample_size: Option<usize>, excel_has_header: Option<bool>) -> Self {
-        Self {
-            sample_size: sample_size.unwrap_or(1000),
-            excel_has_header: excel_has_header.unwrap_or(true),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn excel_store_infer<F, Fut>(
@@ -242,7 +242,7 @@ impl ExcelInferenceEngine {
                         stats.tables_found += 1;
                     }
 
-                    match self.infer_single_excel(path, &source.metadata.silo_id) {
+                    match self.infer_single_excel(path, source) {
                         Ok(table_defs) => {
                             let tables_count = table_defs.len();
                             let fields_count: usize =
@@ -282,10 +282,13 @@ impl ExcelInferenceEngine {
     fn infer_single_excel(
         &self,
         path: &PathBuf,
-        silo_id: &str,
+        source: &Source,
     ) -> Result<Vec<TableDef>, NisabaError> {
-        let record_batches =
-            read_excel_to_record_batch(path, Some(self.sample_size), Some(self.excel_has_header))?;
+        let record_batches = read_excel_to_record_batch(
+            path,
+            Some(source.metadata.num_rows),
+            Some(source.metadata.has_header),
+        )?;
 
         let table_schema = path
             .file_name()
@@ -301,7 +304,7 @@ impl ExcelInferenceEngine {
                 .fields()
                 .iter()
                 .map(|f| SourceField {
-                    silo_id: silo_id.to_string(),
+                    silo_id: source.metadata.silo_id.clone(),
                     table_schema: table_schema.clone(),
                     table_name: table_name.clone(),
                     column_name: f.name().clone(),
@@ -347,15 +350,17 @@ impl SchemaInferenceEngine for ExcelInferenceEngine {
 // Parquet Inference Engine
 // =================================================
 #[derive(Debug)]
-pub struct ParquetInferenceEngine {
-    sample_size: usize,
+pub struct ParquetInferenceEngine;
+
+impl Default for ParquetInferenceEngine {
+    fn default() -> Self {
+        ParquetInferenceEngine
+    }
 }
 
 impl ParquetInferenceEngine {
-    pub fn new(sample_size: Option<usize>) -> Self {
-        Self {
-            sample_size: sample_size.unwrap_or(1000),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn parquet_store_infer<F, Fut>(
@@ -397,7 +402,7 @@ impl ParquetInferenceEngine {
                         stats.tables_found += 1;
                     }
 
-                    match self.infer_single_parquet(path, &source.metadata.silo_id) {
+                    match self.infer_single_parquet(path, source) {
                         Ok(table_def) => {
                             {
                                 let mut stats = rt.block_on(infer_stats.lock());
@@ -423,9 +428,14 @@ impl ParquetInferenceEngine {
         Ok(table_reps.into_inner())
     }
 
-    fn infer_single_parquet(&self, path: &PathBuf, silo_id: &str) -> Result<TableDef, NisabaError> {
+    fn infer_single_parquet(
+        &self,
+        path: &PathBuf,
+        source: &Source,
+    ) -> Result<TableDef, NisabaError> {
         let file = File::open(path)?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file)?.with_limit(self.sample_size);
+        let builder =
+            ParquetRecordBatchReaderBuilder::try_new(file)?.with_limit(source.metadata.num_rows);
         let schema = builder.schema();
 
         let table_name = path
@@ -438,7 +448,7 @@ impl ParquetInferenceEngine {
             .fields()
             .iter()
             .map(|field| SourceField {
-                silo_id: silo_id.to_string(),
+                silo_id: source.metadata.silo_id.clone(),
                 table_schema: "default".into(),
                 table_name: table_name.clone(),
                 column_name: field.name().into(),
@@ -770,15 +780,20 @@ fn calamine_type_to_arrow(values: &[&Data]) -> DataType {
 #[cfg(test)]
 mod tests {
 
-    use crate::{AnalyzerConfig, LatentStore};
+    use crate::{AnalyzerConfig, LatentStore, analyzer::datastore::FileStoreType};
 
     use super::*;
 
     #[tokio::test]
     async fn test_csv_inference() {
-        let source = Source::csv("./assets/csv", None).unwrap();
+        let source = Source::files(FileStoreType::Csv)
+            .path("./assets/csv")
+            .num_rows(1000)
+            .has_header(true)
+            .build()
+            .unwrap();
 
-        let csv_inference = CsvInferenceEngine::new(None, None);
+        let csv_inference = CsvInferenceEngine::new();
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
@@ -804,9 +819,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_xlsx_inference() {
-        let source = Source::excel("./assets/xlsx", None).unwrap();
+        let source = Source::files(FileStoreType::Excel)
+            .path("./assets/xlsx")
+            .num_rows(1000)
+            .has_header(true)
+            .build()
+            .unwrap();
 
-        let excel_inference = ExcelInferenceEngine::new(None, None);
+        let excel_inference = ExcelInferenceEngine::new();
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
@@ -831,9 +851,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_parquet_inference() {
-        let source = Source::parquet("./assets/parquet", None).unwrap();
+        let source = Source::files(FileStoreType::Parquet)
+            .path("./assets/parquet")
+            .num_rows(1000)
+            .build()
+            .unwrap();
 
-        let parquet_inference = ParquetInferenceEngine::new(None);
+        let parquet_inference = ParquetInferenceEngine::new();
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 

@@ -374,7 +374,7 @@ impl SchemaAnalyzer {
         for source in &self.sources {
             let reps = match source.metadata.source_type {
                 SourceType::FileStore(FileStoreType::Csv) => {
-                    let csv_inferer = CsvInferenceEngine::new(None, None);
+                    let csv_inferer = CsvInferenceEngine::new();
                     csv_inferer.csv_store_infer(
                         source,
                         self.context.stats.clone(),
@@ -387,7 +387,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::FileStore(FileStoreType::Excel) => {
-                    let excel_inferer = ExcelInferenceEngine::new(None, None);
+                    let excel_inferer = ExcelInferenceEngine::new();
                     excel_inferer.excel_store_infer(
                         source,
                         self.context.stats.clone(),
@@ -425,7 +425,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::FileStore(FileStoreType::Parquet) => {
-                    let parquet_inferer = ParquetInferenceEngine::new(None);
+                    let parquet_inferer = ParquetInferenceEngine::new();
 
                     parquet_inferer.parquet_store_infer(
                         source,
@@ -659,8 +659,17 @@ mod tests {
             .config(config)
             .name("nisaba1")
             .sources(vec![
-                Source::csv("./assets/csv", None).unwrap(),
-                Source::parquet("./assets/parquet", None).unwrap(),
+                Source::files(FileStoreType::Csv)
+                    .has_header(true)
+                    .num_rows(1000)
+                    .path("./assets/csv")
+                    .build()
+                    .unwrap(),
+                Source::files(FileStoreType::Parquet)
+                    .num_rows(1000)
+                    .path("./assets/parquet")
+                    .build()
+                    .unwrap(),
             ])
             .build()
             .await

@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use mongodb::{Client, options::ClientOptions};
 
@@ -113,6 +109,8 @@ pub struct SourceMetadata {
     /// Should contain namespace for postgres, pattern for files
     /// Must contain database for mongodb
     pub extra: HashMap<Extra, String>,
+    pub num_rows: usize,
+    pub has_header: bool,
 }
 
 #[derive(Debug, Hash, Eq, PartialEq)]
@@ -120,49 +118,12 @@ pub enum Extra {
     PostgresSchema,
     FilePattern,
     MongoDatabase,
+    HasHeader,
 }
 
 impl Source {
-    pub fn csv(path: impl Into<PathBuf>, pattern: Option<&str>) -> Result<Self, NisabaError> {
-        let path = path.into();
-
-        validate_path(&path)?;
-
-        let mut extra = HashMap::new();
-
-        if let Some(pattern) = pattern {
-            extra.insert(Extra::FilePattern, pattern.into());
-        }
-
-        Ok(Self {
-            client: Arc::new(SourceClient::File(path)),
-            metadata: SourceMetadata {
-                silo_id: format!("{}-{}", FileStoreType::Csv, Uuid::now_v7()),
-                source_type: SourceType::FileStore(FileStoreType::Csv),
-                extra,
-            },
-        })
-    }
-
-    pub fn excel(path: impl Into<PathBuf>, pattern: Option<&str>) -> Result<Self, NisabaError> {
-        let path = path.into();
-
-        validate_path(&path)?;
-
-        let mut extra = HashMap::new();
-
-        if let Some(pattern) = pattern {
-            extra.insert(Extra::FilePattern, pattern.into());
-        }
-
-        Ok(Self {
-            client: Arc::new(SourceClient::File(path)),
-            metadata: SourceMetadata {
-                silo_id: format!("{}-{}", FileStoreType::Csv, Uuid::now_v7()),
-                source_type: SourceType::FileStore(FileStoreType::Excel),
-                extra,
-            },
-        })
+    pub fn files(kind: FileStoreType) -> FileSourceBuilder {
+        FileSourceBuilder::builder(kind)
     }
 
     pub fn mongodb() -> MongoSourceBuilder {
@@ -171,27 +132,6 @@ impl Source {
 
     pub fn mysql() -> MySQLSourceBuilder {
         MySQLSourceBuilder::builder()
-    }
-
-    pub fn parquet(path: impl Into<PathBuf>, pattern: Option<&str>) -> Result<Self, NisabaError> {
-        let path = path.into();
-
-        validate_path(&path)?;
-
-        let mut extra = HashMap::new();
-
-        if let Some(pattern) = pattern {
-            extra.insert(Extra::FilePattern, pattern.into());
-        }
-
-        Ok(Self {
-            client: Arc::new(SourceClient::File(path)),
-            metadata: SourceMetadata {
-                silo_id: format!("{}-{}", FileStoreType::Parquet, Uuid::now_v7()),
-                source_type: SourceType::FileStore(FileStoreType::Parquet),
-                extra,
-            },
-        })
     }
 
     pub fn postgresql() -> PostgresSourceBuilder {
@@ -218,6 +158,82 @@ impl Credentials {
     }
 }
 
+pub struct FileSourceBuilder {
+    filestore_type: FileStoreType,
+    path: Option<PathBuf>,
+    num_rows: Option<usize>,
+    pattern: Option<String>,
+    has_header: Option<bool>,
+}
+
+impl FileSourceBuilder {
+    pub fn builder(kind: FileStoreType) -> FileSourceBuilder {
+        FileSourceBuilder {
+            filestore_type: kind,
+            path: None,
+            num_rows: None,
+            pattern: None,
+            has_header: None,
+        }
+    }
+
+    pub fn path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn num_rows(mut self, num_rows: usize) -> Self {
+        self.num_rows = Some(num_rows);
+        self
+    }
+
+    pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.pattern = Some(pattern.into());
+        self
+    }
+
+    pub fn has_header(mut self, has_header: bool) -> Self {
+        self.has_header = Some(has_header);
+        self
+    }
+
+    pub fn build(self) -> Result<Source, NisabaError> {
+        let path = validate_path(self.path)?;
+
+        let mut extra = HashMap::new();
+
+        if let Some(pattern) = self.pattern
+            && !pattern.is_empty()
+        {
+            extra.insert(Extra::FilePattern, pattern);
+        }
+
+        let has_header = if let Some(flag) = self.has_header {
+            if flag && matches!(self.filestore_type, FileStoreType::Parquet) {
+                return Err(NisabaError::Invalid(
+                    "has_header flag is not required for Parquet".into(),
+                ));
+            }
+            flag
+        } else {
+            true
+        };
+
+        let num_rows = validate_num_rows(self.num_rows)?;
+
+        Ok(Source {
+            client: Arc::new(SourceClient::File(path)),
+            metadata: SourceMetadata {
+                silo_id: format!("{}-{}", self.filestore_type.clone(), Uuid::now_v7()),
+                source_type: SourceType::FileStore(self.filestore_type),
+                extra,
+                num_rows: num_rows.unwrap_or(1000),
+                has_header,
+            },
+        })
+    }
+}
+
 pub struct MongoSourceBuilder {
     host: Option<String>,
     port: Option<u16>,
@@ -225,6 +241,7 @@ pub struct MongoSourceBuilder {
     credentials: Option<Credentials>,
     use_srv: bool,
     pool_size: Option<usize>,
+    num_rows: Option<usize>,
 }
 
 impl MongoSourceBuilder {
@@ -236,10 +253,11 @@ impl MongoSourceBuilder {
             credentials: None,
             use_srv: false,
             pool_size: None,
+            num_rows: None,
         }
     }
 
-    pub fn uri(uri: impl Into<String>) -> Result<Source, NisabaError> {
+    pub fn uri(uri: impl Into<String>, num_rows: Option<usize>) -> Result<Source, NisabaError> {
         let uri = uri.into();
 
         if uri.is_empty() {
@@ -252,12 +270,16 @@ impl MongoSourceBuilder {
 
         let client = Client::with_options(client_options)?;
 
+        let num_rows = validate_num_rows(num_rows)?;
+
         Ok(Source {
             client: Arc::new(SourceClient::MongoDB(client)),
             metadata: SourceMetadata {
                 silo_id: format!("{}-{}", DatabaseType::MongoDB, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::MongoDB),
                 extra: HashMap::new(),
+                num_rows: num_rows.unwrap_or(1000),
+                has_header: false,
             },
         })
     }
@@ -289,6 +311,11 @@ impl MongoSourceBuilder {
 
     pub fn pool_size(mut self, pool_size: usize) -> Self {
         self.pool_size = Some(pool_size);
+        self
+    }
+
+    pub fn num_rows(mut self, num_rows: usize) -> Self {
+        self.num_rows = Some(num_rows);
         self
     }
 
@@ -332,12 +359,16 @@ impl MongoSourceBuilder {
         let mut extra = HashMap::new();
         extra.insert(Extra::MongoDatabase, database);
 
+        let num_rows = validate_num_rows(self.num_rows)?;
+
         Ok(Source {
             client: Arc::new(SourceClient::MongoDB(client)),
             metadata: SourceMetadata {
                 silo_id: format!("{}-{}", DatabaseType::MongoDB, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::MongoDB),
                 extra,
+                num_rows: num_rows.unwrap_or(1000),
+                has_header: false,
             },
         })
     }
@@ -348,6 +379,7 @@ pub struct MySQLSourceBuilder {
     port: Option<u16>,
     database: Option<String>,
     credentials: Option<Credentials>,
+    num_rows: Option<usize>,
 }
 
 impl MySQLSourceBuilder {
@@ -357,6 +389,7 @@ impl MySQLSourceBuilder {
             port: None,
             database: None,
             credentials: None,
+            num_rows: None,
         }
     }
 
@@ -377,6 +410,11 @@ impl MySQLSourceBuilder {
 
     pub fn auth(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.credentials = Some(Credentials::basic(username, password));
+        self
+    }
+
+    pub fn num_rows(mut self, num_rows: usize) -> Self {
+        self.num_rows = Some(num_rows);
         self
     }
 
@@ -402,6 +440,8 @@ impl MySQLSourceBuilder {
             database
         );
 
+        let num_rows = validate_num_rows(self.num_rows)?;
+
         let pool = MySqlPool::connect(&conn_str).await?;
 
         Ok(Source {
@@ -410,6 +450,8 @@ impl MySQLSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::MySQL, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::MySQL),
                 extra: HashMap::new(),
+                num_rows: num_rows.unwrap_or(1000),
+                has_header: false,
             },
         })
     }
@@ -423,6 +465,7 @@ pub struct PostgresSourceBuilder {
     database: Option<String>,
     namespace: Option<String>,
     credentials: Option<Credentials>,
+    num_rows: Option<usize>,
 }
 
 impl PostgresSourceBuilder {
@@ -433,6 +476,7 @@ impl PostgresSourceBuilder {
             database: None,
             namespace: None,
             credentials: None,
+            num_rows: None,
         }
     }
     pub fn port(mut self, port: u16) -> Self {
@@ -457,6 +501,11 @@ impl PostgresSourceBuilder {
 
     pub fn host(mut self, host: impl Into<String>) -> Self {
         self.host = Some(host.into());
+        self
+    }
+
+    pub fn num_rows(mut self, num_rows: usize) -> Self {
+        self.num_rows = Some(num_rows);
         self
     }
 
@@ -490,6 +539,8 @@ impl PostgresSourceBuilder {
             extra.insert(Extra::FilePattern, ns);
         }
 
+        let num_rows = validate_num_rows(self.num_rows)?;
+
         let pool = PgPool::connect(&conn_str).await?;
 
         Ok(Source {
@@ -498,6 +549,8 @@ impl PostgresSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::PostgreSQL, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::PostgreSQL),
                 extra,
+                num_rows: num_rows.unwrap_or(1000),
+                has_header: false,
             },
         })
     }
@@ -505,15 +558,24 @@ impl PostgresSourceBuilder {
 
 pub struct SQLiteSourceBuilder {
     path: Option<String>,
+    num_rows: Option<usize>,
 }
 
 impl SQLiteSourceBuilder {
     pub fn builder() -> Self {
-        SQLiteSourceBuilder { path: None }
+        SQLiteSourceBuilder {
+            path: None,
+            num_rows: None,
+        }
     }
 
     pub fn path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
+        self
+    }
+
+    pub fn num_rows(mut self, num_rows: usize) -> Self {
+        self.num_rows = Some(num_rows);
         self
     }
 
@@ -526,6 +588,8 @@ impl SQLiteSourceBuilder {
             return Err(NisabaError::Invalid("Path cannot be empty string".into()));
         }
 
+        let num_rows = validate_num_rows(self.num_rows)?;
+
         let pool = SqlitePool::connect(&path).await?;
 
         Ok(Source {
@@ -534,6 +598,8 @@ impl SQLiteSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::SQLite, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::SQLite),
                 extra: HashMap::new(),
+                num_rows: num_rows.unwrap_or(1000),
+                has_header: false,
             },
         })
     }
@@ -623,17 +689,33 @@ fn validate_namespace(namespace: Option<String>) -> Result<Option<String>, Nisab
     Ok(namespace)
 }
 
+fn validate_num_rows(num_rows: Option<usize>) -> Result<Option<usize>, NisabaError> {
+    match num_rows {
+        Some(v) => {
+            if v == 0 {
+                Err(NisabaError::Invalid(
+                    "Invalid number of rows (0) provided".into(),
+                ))?
+            }
+            Ok(Some(v))
+        }
+        None => Ok(None),
+    }
+}
+
 /// The `validate_path` function runs specific validations on the path provided for file-based backend
 ///
 /// Returns:
 ///
 /// A Result of unit on success or NisabaError if validation fails.
-fn validate_path(path: &Path) -> Result<(), NisabaError> {
+fn validate_path(path: Option<PathBuf>) -> Result<PathBuf, NisabaError> {
+    let path = path.ok_or(NisabaError::Missing("No path provided".into()))?;
+
     if !path.exists() {
         return Err(NisabaError::Missing("Path not found".into()));
     }
 
-    Ok(())
+    Ok(path)
 }
 
 /// The `validate_port` function runs specific validations on port for network-nased backend
@@ -675,7 +757,12 @@ mod tests {
 
     #[test]
     fn test_csv_source() {
-        let source = Source::csv("./assets/csv", None).unwrap();
+        let source = Source::files(FileStoreType::Csv)
+            .has_header(true)
+            .num_rows(1000)
+            .path("./assets/csv")
+            .build()
+            .unwrap();
 
         assert!(matches!(
             source.metadata.source_type,
@@ -689,7 +776,12 @@ mod tests {
 
     #[test]
     fn test_excel_source() {
-        let source = Source::excel("./assets/xlsx", None).unwrap();
+        let source = Source::files(FileStoreType::Excel)
+            .has_header(true)
+            .num_rows(1000)
+            .path("./assets/xlsx")
+            .build()
+            .unwrap();
 
         assert!(matches!(
             source.metadata.source_type,
@@ -703,7 +795,11 @@ mod tests {
 
     #[test]
     fn test_parquet_source() {
-        let source = Source::parquet("./assets/parquet", None).unwrap();
+        let source = Source::files(FileStoreType::Parquet)
+            .num_rows(1000)
+            .path("./assets/parquet")
+            .build()
+            .unwrap();
 
         assert!(matches!(
             source.metadata.source_type,

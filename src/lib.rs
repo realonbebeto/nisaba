@@ -7,7 +7,7 @@ mod types;
 
 pub use analyzer::{
     AnalyzerConfig, SchemaAnalyzer,
-    datastore::Source,
+    datastore::{FileStoreType, Source},
     inference::{
         CsvInferenceEngine, ExcelInferenceEngine, MySQLInferenceEngine, NoSQLInferenceEngine,
         ParquetInferenceEngine, PostgreSQLInferenceEngine, SchemaInferenceEngine,

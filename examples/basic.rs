@@ -1,6 +1,6 @@
 use nisaba::{
-    AnalyzerConfig, DistanceType, EmbeddingModel, SchemaAnalyzer, ScoringConfig, SimilarityConfig,
-    Source,
+    AnalyzerConfig, DistanceType, EmbeddingModel, FileStoreType, SchemaAnalyzer, ScoringConfig,
+    SimilarityConfig, Source,
 };
 
 #[tokio::main]
@@ -23,8 +23,21 @@ async fn main() {
         .name("nisaba")
         .config(config)
         .embedding_model(EmbeddingModel::MultilingualE5Small)
-        .source(Source::csv("./assets/csv", None).unwrap())
-        .sources(vec![Source::parquet("./assets/parquet", None).unwrap()])
+        .source(
+            Source::files(FileStoreType::Csv)
+                .path("./assets/csv")
+                .num_rows(1000)
+                .has_header(true)
+                .build()
+                .unwrap(),
+        )
+        .sources(vec![
+            Source::files(FileStoreType::Parquet)
+                .path("./assets/parquet")
+                .num_rows(1000)
+                .build()
+                .unwrap(),
+        ])
         .build()
         .await
         .unwrap();
