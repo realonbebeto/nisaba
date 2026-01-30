@@ -124,7 +124,7 @@ impl Source {
     pub fn csv(path: impl Into<PathBuf>, pattern: Option<&str>) -> Result<Self, NisabaError> {
         let path = path.into();
 
-        Self::validate_path(&path)?;
+        validate_path(&path)?;
 
         let mut extra = HashMap::new();
 
@@ -145,7 +145,7 @@ impl Source {
     pub fn excel(path: impl Into<PathBuf>, pattern: Option<&str>) -> Result<Self, NisabaError> {
         let path = path.into();
 
-        Self::validate_path(&path)?;
+        validate_path(&path)?;
 
         let mut extra = HashMap::new();
 
@@ -174,7 +174,7 @@ impl Source {
     pub fn parquet(path: impl Into<PathBuf>, pattern: Option<&str>) -> Result<Self, NisabaError> {
         let path = path.into();
 
-        Self::validate_path(&path)?;
+        validate_path(&path)?;
 
         let mut extra = HashMap::new();
 
@@ -198,14 +198,6 @@ impl Source {
 
     pub fn sqlite() -> SQLiteSourceBuilder {
         SQLiteSourceBuilder::builder()
-    }
-
-    fn validate_path(path: &Path) -> Result<(), NisabaError> {
-        if !path.exists() {
-            return Err(NisabaError::Missing("Path not found".into()));
-        }
-
-        Ok(())
     }
 }
 
@@ -299,36 +291,18 @@ impl MongoSourceBuilder {
     }
 
     pub fn build(self) -> Result<Source, NisabaError> {
-        let host = self
-            .host
-            .ok_or(NisabaError::Missing("Host cannot be empty".into()))?;
+        let host = validate_host(self.host)?;
 
-        if host.trim().is_empty() {
-            return Err(NisabaError::Missing("Host cannot be empty string".into()));
-        }
+        let creds = validate_credentials(self.credentials)?;
 
-        if host.contains(|c: char| c.is_whitespace() || c == '@' || c == '/') {
-            return Err(NisabaError::Invalid(
-                "Host contains invalid characters".into(),
-            ));
-        }
+        let database = validate_database(self.database)?;
 
-        let creds = self
-            .credentials
-            .ok_or(NisabaError::Missing("No credentials".into()))?;
-
-        let database = self
-            .database
-            .ok_or(NisabaError::Missing("Database cannot be empty".into()))?;
-
-        let server_addres = if !self.use_srv {
+        let server_address = if !self.use_srv {
             let port = self
                 .port
                 .ok_or(NisabaError::Missing("Host cannot be empty".into()))?;
 
-            if port == 0 {
-                return Err(NisabaError::Invalid("Port cannot be 0".into()));
-            }
+            validate_port(port)?;
 
             mongodb::options::ServerAddress::Tcp {
                 host,
@@ -348,7 +322,7 @@ impl MongoSourceBuilder {
             .credential(Some(credential))
             .min_pool_size(self.pool_size.map(|v| v as u32))
             .default_database(Some(database.clone()))
-            .hosts(vec![server_addres])
+            .hosts(vec![server_address])
             .build();
 
         let client = Client::with_options(client_options)?;
@@ -405,35 +379,17 @@ impl MySQLSourceBuilder {
     }
 
     pub async fn build(self) -> Result<Source, NisabaError> {
-        let database = self
-            .database
-            .ok_or(NisabaError::Missing("Database cannot be empty".into()))?;
+        let database = validate_database(self.database)?;
 
-        let host = self
-            .host
-            .ok_or(NisabaError::Missing("Host cannot be empty".into()))?;
-
-        if host.trim().is_empty() {
-            return Err(NisabaError::Missing("Host cannot be empty string".into()));
-        }
-
-        if host.contains(|c: char| c.is_whitespace() || c == '@' || c == '/') {
-            return Err(NisabaError::Invalid(
-                "Host contains invalid characters".into(),
-            ));
-        }
+        let host = validate_host(self.host)?;
 
         let port = self
             .port
             .ok_or(NisabaError::Missing("Host cannot be empty".into()))?;
 
-        if port == 0 {
-            return Err(NisabaError::Invalid("Port cannot be 0".into()));
-        }
+        validate_port(port)?;
 
-        let creds = self
-            .credentials
-            .ok_or(NisabaError::Missing("No credentials".into()))?;
+        let creds = validate_credentials(self.credentials)?;
 
         let conn_str = format!(
             "mysql://{}:{}@{}:{}/{}",
@@ -503,48 +459,19 @@ impl PostgresSourceBuilder {
     }
 
     pub async fn build(self) -> Result<Source, NisabaError> {
-        let namespace = match self.namespace {
-            Some(nm) => {
-                if nm.contains(|c: char| c.is_whitespace() || c == '@' || c == '/' || c == '\\') {
-                    return Err(NisabaError::Invalid(
-                        "Namespace/schema contains invalid characters".into(),
-                    ));
-                }
+        let namespace = validate_namespace(self.namespace)?;
 
-                Some(nm)
-            }
-            None => None,
-        };
+        let database = validate_database(self.database)?;
 
-        let database = self
-            .database
-            .ok_or(NisabaError::Missing("Database cannot be empty".into()))?;
+        let creds = validate_credentials(self.credentials)?;
 
-        let creds = self
-            .credentials
-            .ok_or(NisabaError::Missing("No credentials".into()))?;
-
-        let host = self
-            .host
-            .ok_or(NisabaError::Missing("Host cannot be empty".into()))?;
-
-        if host.trim().is_empty() {
-            return Err(NisabaError::Missing("Host cannot be empty string".into()));
-        }
-
-        if host.contains(|c: char| c.is_whitespace() || c == '@' || c == '/') {
-            return Err(NisabaError::Invalid(
-                "Host contains invalid characters".into(),
-            ));
-        }
+        let host = validate_host(self.host)?;
 
         let port = self
             .port
             .ok_or(NisabaError::Missing("Host cannot be empty".into()))?;
 
-        if port == 0 {
-            return Err(NisabaError::Invalid("Port cannot be 0".into()));
-        }
+        validate_port(port)?;
 
         let conn_str = format!(
             "postgresql://{}:{}@{}:{}/{}",
@@ -593,6 +520,10 @@ impl SQLiteSourceBuilder {
             .path
             .ok_or(NisabaError::Missing("Path cannot be empty".into()))?;
 
+        if path.is_empty() {
+            return Err(NisabaError::Invalid("Path cannot be empty string".into()));
+        }
+
         let pool = SqlitePool::connect(&path).await?;
 
         Ok(Source {
@@ -604,6 +535,115 @@ impl SQLiteSourceBuilder {
             },
         })
     }
+}
+
+/// The `validate_credentials` function runs specific validations on credentials for network-nased backend
+///
+/// Returns:
+///
+/// A `Credential` Result on success or NisabaError if validation fails.
+fn validate_credentials(credentials: Option<Credentials>) -> Result<Credentials, NisabaError> {
+    let creds = credentials.ok_or(NisabaError::Missing("No credentials provided/found".into()))?;
+
+    if creds.username.trim().is_empty() {
+        return Err(NisabaError::Missing("Username cannot be empty".into()));
+    }
+
+    if creds.password.trim().is_empty() {
+        return Err(NisabaError::Missing("Password cannot be empty".into()));
+    }
+
+    Ok(creds)
+}
+
+/// The `validate_database_name` function runs specific validations on database_name for network-nased backend
+///
+/// Returns:
+///
+/// A String Result on success or NisabaError if validation fails.
+fn validate_database(database: Option<String>) -> Result<String, NisabaError> {
+    let database = database.ok_or(NisabaError::Missing("Database cannot be empty".into()))?;
+
+    if database.trim().is_empty() {
+        return Err(NisabaError::Missing(
+            "Database name cannot be empty string".into(),
+        ));
+    }
+
+    if database.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
+        return Err(NisabaError::Invalid(
+            "Database name contains invalid characters".into(),
+        ));
+    }
+
+    Ok(database)
+}
+
+/// The `validate_host` function runs specific validations on host for network-nased backend
+///
+/// Returns:
+///
+/// A String Result on success or NisabaError if validation fails.
+fn validate_host(host: Option<String>) -> Result<String, NisabaError> {
+    let host = host.ok_or(NisabaError::Missing("Host cannot be empty".into()))?;
+
+    if host.trim().is_empty() {
+        return Err(NisabaError::Missing("Host cannot be empty string".into()));
+    }
+
+    if host.contains(|c: char| c.is_whitespace() || c == '@' || c == '/') {
+        return Err(NisabaError::Invalid(
+            "Host contains invalid characters".into(),
+        ));
+    }
+
+    Ok(host)
+}
+
+/// The `validate_namespace` function runs specific validations on host for PostgreSQL
+///
+/// Returns:
+///
+/// A Option Result on success or NisabaError if validation fails.
+fn validate_namespace(namespace: Option<String>) -> Result<Option<String>, NisabaError> {
+    let namespace = match namespace {
+        Some(nm) => {
+            if nm.contains(|c: char| c.is_whitespace() || c == '@' || c == '/' || c == '\\') {
+                return Err(NisabaError::Invalid(
+                    "Namespace/schema contains invalid characters".into(),
+                ));
+            }
+
+            Some(nm)
+        }
+        None => None,
+    };
+    Ok(namespace)
+}
+
+/// The `validate_path` function runs specific validations on the path provided for file-based backend
+///
+/// Returns:
+///
+/// A Result of unit on success or NisabaError if validation fails.
+fn validate_path(path: &Path) -> Result<(), NisabaError> {
+    if !path.exists() {
+        return Err(NisabaError::Missing("Path not found".into()));
+    }
+
+    Ok(())
+}
+
+/// The `validate_port` function runs specific validations on port for network-nased backend
+///
+/// Returns:
+///
+/// A Result of unit on success or NisabaError if validation fails.
+fn validate_port(port: u16) -> Result<(), NisabaError> {
+    if port == 0 {
+        return Err(NisabaError::Invalid("Port cannot be 0".into()));
+    }
+    Ok(())
 }
 
 /// The `url_encode` function encodes a connection string to url safe
