@@ -1,6 +1,6 @@
 use fastembed::EmbeddingModel;
 use lancedb::DistanceType;
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -133,6 +133,7 @@ pub struct InferenceContext {
     pub config: Arc<AnalyzerConfig>,
     pub persistence: Arc<LatentStore>,
     pub stats: Arc<Mutex<InferenceStats>>,
+    pub threads: usize,
 }
 
 /// The `SchemaAnalyzer` provides an interface for store reconciliation. It contains fields for name,
@@ -377,7 +378,7 @@ impl SchemaAnalyzer {
                     csv_inferer.csv_store_infer(
                         source,
                         self.context.stats.clone(),
-                        4,
+                        self.context.threads,
                         |table_defs| async {
                             table_handler.store_tables(table_defs).await?;
                             Ok(())
@@ -390,7 +391,7 @@ impl SchemaAnalyzer {
                     excel_inferer.excel_store_infer(
                         source,
                         self.context.stats.clone(),
-                        4,
+                        self.context.threads,
                         |table_defs| async {
                             table_handler.store_tables(table_defs).await?;
                             Ok(())
@@ -511,6 +512,7 @@ pub struct SchemaAnalyzerBuilder {
     config: Option<AnalyzerConfig>,
     persist_path: Option<String>,
     embedding_model: Option<EmbeddingModel>,
+    threads: Option<usize>,
 }
 
 impl SchemaAnalyzerBuilder {
@@ -551,6 +553,11 @@ impl SchemaAnalyzerBuilder {
 
     pub fn embedding_model(mut self, model: EmbeddingModel) -> Self {
         self.embedding_model = Some(model);
+        self
+    }
+
+    pub fn threads(mut self, threads: usize) -> Self {
+        self.threads = Some(threads);
         self
     }
 
@@ -608,10 +615,22 @@ impl SchemaAnalyzerBuilder {
             .build()
             .await?;
 
+        let threads = if let Some(threads) = self.threads {
+            if threads == 0 {
+                return Err(NisabaError::Invalid(
+                    "Invalid thread size: Threads must be greater than 0".into(),
+                ));
+            }
+            threads
+        } else {
+            std::thread::available_parallelism().map_or(2, NonZeroUsize::get)
+        };
+
         let context = InferenceContext {
             config: config.clone(),
             persistence: Arc::new(persistence),
             stats: Arc::new(Mutex::new(InferenceStats::default())),
+            threads,
         };
 
         Ok(SchemaAnalyzer {
