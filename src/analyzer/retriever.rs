@@ -15,8 +15,9 @@ use lancedb::{
     index::{Index, vector::IvfHnswPqIndexBuilder},
     query::{ExecutableQuery, QueryBase, Select},
 };
-use nalgebra::SVector;
+use nalgebra::DVector;
 use std::{marker::PhantomData, path::PathBuf, str::FromStr, sync::Arc};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
@@ -36,7 +37,7 @@ pub trait Storable: Send + Sync {
     type SearchResult;
 
     /// Get the schema for this type
-    fn schema() -> Arc<Schema>;
+    fn schema(dim: usize) -> Arc<Schema>;
 
     /// Get name of the store element (TableDef/FieldDef)
     fn name(&self) -> &String;
@@ -62,8 +63,9 @@ pub trait Storable: Send + Sync {
 /// * `conn`: The `conn` property is a `Connection` to Lancedb.
 pub struct LatentStore {
     conn: Connection,
-    embedding_model: EmbeddingModel,
+    embedding_model: Arc<Mutex<TextEmbedding>>,
     config: Arc<AnalyzerConfig>,
+    dim: usize,
 }
 
 impl LatentStore {
@@ -86,6 +88,7 @@ impl LatentStore {
             config: self.config.clone(),
             _phantom: PhantomData,
             embedding_model: self.embedding_model.clone(),
+            dim: self.dim,
         }
     }
 }
@@ -128,12 +131,19 @@ impl LatentStoreBuilder {
 
         let conn = lancedb::connect(path).execute().await?;
 
+        let embed_model_name = self
+            .embedding_model
+            .unwrap_or(EmbeddingModel::MultilingualE5Small);
+
+        let dim = TextEmbedding::get_model_info(&embed_model_name)?.dim;
+
+        let embedding_model = TextEmbedding::try_new(InitOptions::new(embed_model_name))?;
+
         Ok(LatentStore {
             conn,
-            embedding_model: self
-                .embedding_model
-                .unwrap_or(EmbeddingModel::MultilingualE5Small),
+            embedding_model: Arc::new(Mutex::new(embedding_model)),
             config: self.config.unwrap_or_default(),
+            dim,
         })
     }
 }
@@ -150,12 +160,13 @@ pub struct TableHandler<T: Storable> {
     // Marker to hold a Storable type
     // Used to associate the handler with a specific Storable type
     _phantom: PhantomData<T>,
-    embedding_model: EmbeddingModel,
+    embedding_model: Arc<Mutex<TextEmbedding>>,
+    dim: usize,
 }
 
 impl<T: Storable> TableHandler<T> {
     pub async fn initialize(&self) -> Result<(), NisabaError> {
-        let scheme = T::schema();
+        let scheme = T::schema(self.dim);
 
         self.conn
             .create_empty_table(T::vtable_name(), scheme)
@@ -342,8 +353,6 @@ impl<T: Storable> TableHandler<T> {
     }
 
     pub async fn store_tables(&self, table_defs: Vec<TableDef>) -> Result<(), NisabaError> {
-        let mut model = TextEmbedding::try_new(InitOptions::new(self.embedding_model.clone()))?;
-
         let field_texts: Vec<(&FieldDef, String)> = table_defs
             .iter()
             .flat_map(|table_def| {
@@ -357,13 +366,16 @@ impl<T: Storable> TableHandler<T> {
             })
             .collect();
 
-        let embeddings = &model.embed(
-            field_texts
-                .iter()
-                .map(|(_, text)| text)
-                .collect::<Vec<&String>>(),
-            None,
-        )?;
+        let embeddings = {
+            let mut model = self.embedding_model.lock().await;
+            model.embed(
+                field_texts
+                    .iter()
+                    .map(|(_, text)| text)
+                    .collect::<Vec<&String>>(),
+                None,
+            )?
+        };
 
         let field_embeds: Vec<(&FieldDef, Vec<f32>)> = field_texts
             .iter()
@@ -374,7 +386,7 @@ impl<T: Storable> TableHandler<T> {
         let table_embeds: Vec<(&TableDef, Vec<f32>)> = table_defs
             .iter()
             .map(|t| {
-                let mut total_field_embed = vec![0.0f32; 384];
+                let mut total_field_embed = vec![0.0f32; self.dim];
                 let emb = field_embeds.iter().filter(|f| {
                     let field_ids = t.fields.iter().map(|i| i.id).collect::<Vec<Uuid>>();
 
@@ -393,7 +405,9 @@ impl<T: Storable> TableHandler<T> {
                     .iter_mut()
                     .for_each(|x| *x /= height as f32);
 
-                let total_field_embed: SVector<f32, 384> = SVector::from_vec(total_field_embed);
+                let total_field_embed: DVector<f32> = DVector::from_vec(total_field_embed);
+
+                // SVector::from_vec(total_field_embed);
 
                 // Table Stats Embedding
                 let structure_embed = t.structure().embedding();
@@ -408,9 +422,9 @@ impl<T: Storable> TableHandler<T> {
             })
             .collect();
 
-        let field_schema = FieldDef::schema();
+        let field_schema = FieldDef::schema(self.dim);
 
-        let field_batch = fields_to_record_batch(field_embeds, field_schema.clone())?;
+        let field_batch = fields_to_record_batch(field_embeds, field_schema.clone(), self.dim)?;
 
         let field_batches =
             RecordBatchIterator::new(vec![field_batch].into_iter().map(Ok), field_schema);
@@ -423,9 +437,9 @@ impl<T: Storable> TableHandler<T> {
 
         tbl.add(field_batches).execute().await?;
 
-        let table_schema = TableRep::schema();
+        let table_schema = TableRep::schema(self.dim);
 
-        let table_batch = table_to_record_batch(table_embeds, table_schema.clone())?;
+        let table_batch = table_to_record_batch(table_embeds, table_schema.clone(), self.dim)?;
 
         let table_batches =
             RecordBatchIterator::new(vec![table_batch].into_iter().map(Ok), table_schema);
@@ -538,6 +552,7 @@ fn table_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<TableMatch
 fn table_to_record_batch(
     items: Vec<(&TableDef, Vec<f32>)>,
     schema: Arc<Schema>,
+    dim: usize,
 ) -> Result<RecordBatch, NisabaError> {
     let ids = StringArray::from_iter_values(items.iter().map(|t| t.0.id.to_string()));
 
@@ -552,7 +567,7 @@ fn table_to_record_batch(
                 Some(v)
             })
             .collect::<Vec<_>>(),
-        384,
+        dim as i32,
     );
 
     let capacity = items.iter().map(|t| t.0.fields.len()).sum::<usize>();
@@ -901,6 +916,7 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
 fn fields_to_record_batch(
     items: Vec<(&FieldDef, Vec<f32>)>,
     schema: Arc<Schema>,
+    dim: usize,
 ) -> Result<RecordBatch, NisabaError> {
     let ids = StringArray::from_iter_values(items.iter().map(|f| f.0.id.to_string()));
 
@@ -1046,7 +1062,7 @@ fn fields_to_record_batch(
                     .collect::<Vec<Option<f32>>>(),
             )
         }),
-        384,
+        dim as i32,
     );
 
     let batch = RecordBatch::try_new(

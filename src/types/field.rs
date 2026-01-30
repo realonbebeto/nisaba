@@ -414,7 +414,7 @@ impl Storable for FieldDef {
         &self.name
     }
 
-    fn schema() -> Arc<Schema> {
+    fn schema(dim: usize) -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("silo_id", DataType::Utf8, false),
@@ -439,7 +439,10 @@ impl Storable for FieldDef {
             Field::new("datetime_precision", DataType::Int32, true),
             Field::new(
                 "vector",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    dim as i32,
+                ),
                 true,
             ),
         ]))

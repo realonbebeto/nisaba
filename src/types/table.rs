@@ -59,14 +59,17 @@ impl Storable for TableRep {
         &self.name
     }
 
-    fn schema() -> std::sync::Arc<arrow::datatypes::Schema> {
+    fn schema(dim: usize) -> std::sync::Arc<arrow::datatypes::Schema> {
         Arc::new(Schema::new(vec![
             Field::new("id", DataType::Utf8, false),
             Field::new("silo_id", DataType::Utf8, false),
             Field::new("name", DataType::Utf8, false),
             Field::new(
                 "vector",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 384),
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    dim as i32,
+                ),
                 true,
             ),
             Field::new(
