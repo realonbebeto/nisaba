@@ -127,59 +127,46 @@ impl GraphClusterer {
 
 #[cfg(test)]
 mod tests {
-    // use arrow::{
-    //     array::{FixedSizeBinaryArray, Float32Array, RecordBatch},
-    //     datatypes::{DataType, Field, Schema},
-    // };
+
     use nalgebra::Vector1;
-    use std::{
-        // collections::{HashMap, HashSet},
-        // sync::Arc,
-        thread,
-    };
-    // use uuid::Uuid;
+    use std::{sync::Arc, thread};
+    use uuid::Uuid;
 
-    use crate::analyzer::calculation::{
-        // ArrowGraph,
-        deterministic_projection,
-        // leiden_communities
+    use crate::{
+        AnalyzerConfig,
+        analyzer::calculation::{GraphClusterer, deterministic_projection},
     };
 
-    // fn create_test_graph(all_ids: &[Uuid; 6]) -> ArrowGraph {
-    //     let schema = Arc::new(Schema::new(vec![
-    //         Field::new("source", DataType::FixedSizeBinary(16), false),
-    //         Field::new("target", DataType::FixedSizeBinary(16), false),
-    //         Field::new("weight", DataType::Float32, true),
-    //     ]));
+    fn create_test_graph() -> GraphClusterer {
+        let all_ids = [
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        ];
 
-    //     let sources = [
-    //         all_ids[0], all_ids[1], all_ids[0], all_ids[2], all_ids[3], all_ids[4], all_ids[2],
-    //     ];
-    //     let targets = [
-    //         all_ids[1], all_ids[0], all_ids[2], all_ids[5], all_ids[4], all_ids[5], all_ids[1],
-    //     ];
-    //     let weights = [1.0_f32, 0.9, 0.9, 0.3, 0.7, 0.6, 0.2];
+        let sources = [
+            all_ids[0], all_ids[0], all_ids[2], all_ids[3], all_ids[4], all_ids[2],
+        ];
+        let targets = [
+            all_ids[1], all_ids[2], all_ids[5], all_ids[4], all_ids[5], all_ids[1],
+        ];
+        let weights = [0.02_f32, 0.1, 0.1, 0.7, 0.3, 0.4, 0.8];
 
-    //     let edges = RecordBatch::try_new(
-    //         schema,
-    //         vec![
-    //             Arc::new(
-    //                 FixedSizeBinaryArray::try_from_iter(sources.iter().map(|v| v.into_bytes()))
-    //                     .expect("Failed to create `source` fixedsizebinaryarray"),
-    //             ),
-    //             Arc::new(
-    //                 FixedSizeBinaryArray::try_from_iter(targets.iter().map(|v| v.into_bytes()))
-    //                     .expect("Failed to create `target` fixedsizebinaryarray"),
-    //             ),
-    //             Arc::new(Float32Array::from(
-    //                 weights.into_iter().collect::<Vec<f32>>(),
-    //             )),
-    //         ],
-    //     )
-    //     .expect("Failed to create record batch");
+        let config = Arc::new(AnalyzerConfig::default());
 
-    //     ArrowGraph::from_edges(edges).expect("Failed to create ArrowGraph instance")
-    // }
+        let mut clusterer = GraphClusterer::new();
+
+        for ((source, candidate), weight) in sources.into_iter().zip(targets).zip(weights) {
+            clusterer
+                .add_ann_edges(config.clone(), source, &[(candidate, weight)])
+                .unwrap();
+        }
+
+        clusterer
+    }
 
     #[test]
     fn test_deterministic_projection() {
@@ -194,5 +181,16 @@ mod tests {
         assert_eq!(result1.len(), result2.len());
 
         assert_eq!(result1, result2);
+    }
+
+    #[test]
+    fn test_graph_clustering() {
+        let graph = create_test_graph();
+
+        let result = graph.clusters().unwrap();
+
+        dbg!(&result);
+
+        assert!(!result.is_empty());
     }
 }
