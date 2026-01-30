@@ -6,19 +6,14 @@ use arrow::{
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
 };
 use futures::TryStreamExt;
-use mongodb::{
-    Client,
-    bson::{Bson, Document, doc},
-    options::ClientOptions,
-};
+use mongodb::bson::{Bson, Document, doc};
 
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 use crate::{
     analyzer::{
-        catalog::{StorageBackend, StorageConfig},
+        datastore::{Extra, Source},
         inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
         probe::InferenceStats,
     },
@@ -70,7 +65,7 @@ impl NoSQLInferenceEngine {
     /// or a `NisabaError`.
     pub async fn mongodb_store_infer<F, Fut>(
         &self,
-        config: &StorageConfig,
+        source: &Source,
         infer_stats: Arc<Mutex<InferenceStats>>,
         on_table: Arc<F>,
     ) -> Result<Vec<TableRep>, NisabaError>
@@ -78,18 +73,24 @@ impl NoSQLInferenceEngine {
         F: Fn(Vec<TableDef>) -> Fut + Sync,
         Fut: Future<Output = Result<(), NisabaError>> + Send,
     {
-        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
-        let conn_str = config.connection_string()?;
-        let db_name = config.clone().database.unwrap();
+        let client = source
+            .client
+            .as_mongo()
+            .ok_or(NisabaError::Missing("No mongodb client provided".into()))?;
 
-        let mut client_options = ClientOptions::parse(conn_str).await?;
-        client_options.min_pool_size = Some(5);
-        client_options.max_pool_size = Some(50);
-        let client = Client::with_options(client_options)?;
+        let db = client.default_database().ok_or(NisabaError::Missing(
+            "No database for Mongo Client was provided".into(),
+        ))?;
 
-        // let client = Client::with_uri_str(conn_str).await?;
+        let db_name =
+            source
+                .metadata
+                .extra
+                .get(&Extra::MongoDatabase)
+                .ok_or(NisabaError::Missing(
+                    "No database for Mongo provided".into(),
+                ))?;
 
-        let db = client.database(&db_name);
         let collections = db.list_collection_names().await?;
 
         let mut table_reps_results: Vec<Result<TableRep, NisabaError>> = Vec::new();
@@ -104,8 +105,12 @@ impl NoSQLInferenceEngine {
 
                 let docs: Vec<Document> = cursor.try_collect().await?;
 
-                let (result, schema) =
-                    self.mongo_collection_infer(&db_name, &collection_name, &docs, &silo_id)?;
+                let (result, schema) = self.mongo_collection_infer(
+                    db_name,
+                    &collection_name,
+                    &docs,
+                    &source.metadata.silo_id,
+                )?;
 
                 let mut batch = self.docs_to_record_batch(&docs, schema.clone())?;
 
@@ -113,7 +118,7 @@ impl NoSQLInferenceEngine {
 
                 {
                     let mut stats = infer_stats.lock().await;
-                    stats.tables_processed += table_def.len();
+                    stats.tables_found += table_def.len();
                 }
 
                 let mut table_def = table_def
@@ -361,21 +366,6 @@ impl NoSQLInferenceEngine {
 }
 
 impl SchemaInferenceEngine for NoSQLInferenceEngine {
-    /// The function `can_handle` checks if the provided `StorageBackend` is `MongoDB`.
-    ///
-    /// Arguments:
-    ///
-    /// * `backend`: The `backend` parameter is of type `StorageBackend`, which is an enum representing
-    ///   different types of storage backends.
-    ///
-    /// Returns:
-    ///
-    /// The function `can_handle` returns a boolean value indicating whether the provided
-    /// `StorageBackend` is equal to `StorageBackend::MongoDB`.
-    fn can_handle(&self, backend: &StorageBackend) -> bool {
-        matches!(backend, StorageBackend::MongoDB)
-    }
-
     fn engine_name(&self) -> &str {
         "mongodb"
     }
@@ -475,34 +465,36 @@ fn merge_types(type_a: &DataType, type_b: &DataType) -> DataType {
 #[cfg(test)]
 mod tests {
 
-    use crate::{AnalyzerConfig, LatentStore, types::FieldDef};
+    use crate::{AnalyzerConfig, LatentStore, analyzer::datastore::Source, types::FieldDef};
 
     use super::*;
 
     #[tokio::test]
     async fn test_mongo_inference() {
-        let config = StorageConfig::new_network_backend(
-            StorageBackend::MongoDB,
-            "localhost",
-            27017,
-            "mongo_store",
-            "mongodb",
-            "mongodb",
-            None::<String>,
-        )
-        .unwrap();
+        let source = Source::mongodb()
+            .auth("mongodb", "mongodb")
+            .host("localhost")
+            .database("mongo_store")
+            .pool_size(5)
+            .port(27017)
+            .build()
+            .unwrap();
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(LatentStore::new(None, None).await.unwrap());
+        let latent_store = Arc::new(
+            LatentStore::builder()
+                .analyzer_config(Arc::new(AnalyzerConfig::default()))
+                .build()
+                .await
+                .unwrap(),
+        );
 
-        let table_handler =
-            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+        let table_handler = latent_store.table_handler::<TableRep>();
 
         table_handler.initialize().await.unwrap();
 
-        let field_handler =
-            latent_store.table_handler::<FieldDef>(Arc::new(AnalyzerConfig::default()));
+        let field_handler = latent_store.table_handler::<FieldDef>();
 
         field_handler.initialize().await.unwrap();
 
@@ -510,7 +502,7 @@ mod tests {
 
         let result = nosql_inference
             .mongodb_store_infer(
-                &config,
+                &source,
                 stats,
                 Arc::new(|table_defs| async {
                     table_handler.store_tables(table_defs).await?;

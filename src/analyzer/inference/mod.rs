@@ -39,19 +39,13 @@ pub use nosql::NoSQLInferenceEngine;
 pub use sql::{MySQLInferenceEngine, PostgreSQLInferenceEngine, SqliteInferenceEngine};
 
 use crate::{
-    analyzer::{
-        catalog::StorageBackend,
-        inference::promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
-    },
+    analyzer::inference::promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
     error::NisabaError,
     types::{FieldDef, TableDef},
 };
 
 /// Trait for schema inference engines
 pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
-    /// Check if this engine can handle the given data source
-    fn can_handle(&self, backend: &StorageBackend) -> bool;
-
     /// Get the name of the inference engine
     fn engine_name(&self) -> &str;
 

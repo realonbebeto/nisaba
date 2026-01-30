@@ -63,40 +63,13 @@ pub trait Storable: Send + Sync {
 pub struct LatentStore {
     conn: Connection,
     embedding_model: EmbeddingModel,
+    config: Arc<AnalyzerConfig>,
 }
 
 impl LatentStore {
-    /// The function creates a new database connection, defines a table schema with fields, and creates
-    /// an index on a specific field in the table.
-    ///
-    /// Arguments:
-    ///
-    /// * `dir_path`: The `dir_path` parameter in the `new` function is an optional reference to a
-    ///   string that represents the directory path where the database will be created or accessed. It
-    ///   allows the user to specify a custom directory path for the database. If no directory path is
-    ///   provided, the database will be created/access
-    ///
-    /// Returns:
-    ///
-    /// The `new` function is returning an instance of the `LatentStore` struct, which contains a
-    /// connection to a database.
-    pub async fn new(
-        dir_path: Option<&str>,
-        embedding_model: Option<EmbeddingModel>,
-    ) -> Result<Self, NisabaError> {
-        let path = db_path(dir_path);
-        let path = path
-            .to_str()
-            .ok_or(NisabaError::Invalid("Invalid latent store path".into()))?;
-
-        let conn = lancedb::connect(path).execute().await?;
-
-        Ok(LatentStore {
-            conn,
-            embedding_model: embedding_model.unwrap_or(EmbeddingModel::MultilingualE5Small),
-        })
+    pub fn builder() -> LatentStoreBuilder {
+        LatentStoreBuilder::builder()
     }
-
     /// The `table_handler` is a function represents the result of a clustering process
     ///
     /// Arguments:
@@ -107,13 +80,61 @@ impl LatentStore {
     /// Returns:
     ///
     /// A table_handler of type TableHandler of generic T
-    pub fn table_handler<T: Storable>(&self, config: Arc<AnalyzerConfig>) -> TableHandler<T> {
+    pub fn table_handler<T: Storable>(&self) -> TableHandler<T> {
         TableHandler {
             conn: self.conn.clone(),
-            config,
+            config: self.config.clone(),
             _phantom: PhantomData,
             embedding_model: self.embedding_model.clone(),
         }
+    }
+}
+
+pub struct LatentStoreBuilder {
+    conn_path: Option<String>,
+    embedding_model: Option<EmbeddingModel>,
+    config: Option<Arc<AnalyzerConfig>>,
+}
+
+impl LatentStoreBuilder {
+    pub fn builder() -> Self {
+        Self {
+            conn_path: None,
+            embedding_model: None,
+            config: None,
+        }
+    }
+    pub fn connection_path(mut self, path: Option<impl Into<String>>) -> Self {
+        self.conn_path = path.map(|v| v.into());
+        self
+    }
+
+    pub fn embedding_model(mut self, model: Option<EmbeddingModel>) -> Self {
+        self.embedding_model = model;
+        self
+    }
+
+    pub fn analyzer_config(mut self, config: Arc<AnalyzerConfig>) -> Self {
+        self.config = Some(config);
+
+        self
+    }
+
+    pub async fn build(self) -> Result<LatentStore, NisabaError> {
+        let path = db_path(self.conn_path);
+        let path = path
+            .to_str()
+            .ok_or(NisabaError::Invalid("Invalid latent store path".into()))?;
+
+        let conn = lancedb::connect(path).execute().await?;
+
+        Ok(LatentStore {
+            conn,
+            embedding_model: self
+                .embedding_model
+                .unwrap_or(EmbeddingModel::MultilingualE5Small),
+            config: self.config.unwrap_or_default(),
+        })
     }
 }
 
@@ -219,12 +240,12 @@ impl<T: Storable> TableHandler<T> {
             .query()
             .only_if(format!("id != \'{}\'", item))
             .nearest_to(embedding)?
-            .nprobes(self.config.top_k.unwrap_or(7))
+            .nprobes(self.config.similarity.top_k.unwrap_or(7))
             .refine_factor(5)
-            .limit(self.config.top_k.unwrap_or(7))
+            .limit(self.config.similarity.top_k.unwrap_or(7))
             .select(Select::Columns(columns))
-            .distance_type(DistanceType::Cosine)
-            .distance_range(Some(0.), Some(1. - self.config.similarity_threshold))
+            .distance_type(self.config.similarity.algorithm)
+            .distance_range(Some(0.), Some(1. - self.config.similarity.threshold))
             .execute()
             .await?
             .try_collect::<Vec<_>>()
@@ -296,12 +317,12 @@ impl<T: Storable> TableHandler<T> {
                 item, table_name
             ))
             .nearest_to(embedding)?
-            .nprobes(self.config.top_k.unwrap_or(7))
+            .nprobes(self.config.similarity.top_k.unwrap_or(7))
             .refine_factor(5)
-            .limit(self.config.top_k.unwrap_or(7))
+            .limit(self.config.similarity.top_k.unwrap_or(7))
             .select(Select::Columns(columns))
-            .distance_type(DistanceType::Cosine)
-            .distance_range(Some(0.), Some(1. - self.config.similarity_threshold))
+            .distance_type(self.config.similarity.algorithm)
+            .distance_range(Some(0.), Some(1. - self.config.similarity.threshold))
             .execute()
             .await?
             .try_collect::<Vec<_>>()
@@ -378,9 +399,8 @@ impl<T: Storable> TableHandler<T> {
                 let structure_embed = t.structure().embedding();
 
                 // Table Combined embedding
-                let table_embedding = ((self.config.name_weight + self.config.type_weight)
-                    * total_field_embed
-                    + self.config.structure_weight * structure_embed)
+                let table_embedding = ((self.config.scoring.type_weight) * total_field_embed
+                    + self.config.scoring.structure_weight * structure_embed)
                     .as_slice()
                     .to_vec();
 
@@ -1058,7 +1078,7 @@ fn fields_to_record_batch(
 }
 
 /// A function that creates/provides local path to where the latent store will be created or is existing
-fn db_path(dir_path: Option<&str>) -> PathBuf {
+fn db_path(dir_path: Option<String>) -> PathBuf {
     match dir_path {
         Some(v) => {
             let mut path = PathBuf::new();
@@ -1091,7 +1111,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap();
 
-        let _ltstore = LatentStore::new(Some(temp_path), None).await;
+        let _ltstore = LatentStore::builder()
+            .analyzer_config(Arc::new(AnalyzerConfig::default()))
+            .connection_path(Some(temp_path))
+            .build()
+            .await
+            .unwrap();
 
         assert!(std::path::Path::new(temp_path).exists());
     }
@@ -1101,7 +1126,13 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap();
 
-        let ltstore = LatentStore::new(Some(temp_path), None).await.unwrap();
+        let ltstore = LatentStore::builder()
+            .analyzer_config(Arc::new(AnalyzerConfig::default()))
+            .connection_path(Some(temp_path))
+            .embedding_model(None)
+            .build()
+            .await
+            .unwrap();
 
         let tables = ltstore.conn.table_names().execute().await.unwrap();
 

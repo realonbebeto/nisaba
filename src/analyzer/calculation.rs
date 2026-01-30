@@ -85,7 +85,7 @@ impl GraphClusterer {
     ) -> Result<(), NisabaError> {
         for (id, conf) in candidates {
             let adj_score = 1.0 - conf;
-            if adj_score >= config.similarity_threshold {
+            if adj_score >= config.similarity.threshold {
                 if let Ok(existing) = self.graph.get_edge(source, *id)
                     && adj_score > existing.weight as f32
                 {

@@ -16,11 +16,10 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 use crate::{
     analyzer::{
-        catalog::{StorageBackend, StorageConfig},
+        datastore::Source,
         inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
         probe::InferenceStats,
     },
@@ -47,7 +46,7 @@ impl CsvInferenceEngine {
 
     pub fn csv_store_infer<F, Fut>(
         &self,
-        config: &StorageConfig,
+        source: &Source,
         infer_stats: Arc<Mutex<InferenceStats>>,
         workers: usize,
         on_table: F,
@@ -56,9 +55,10 @@ impl CsvInferenceEngine {
         F: Fn(Vec<TableDef>) -> Fut + Sync,
         Fut: Future<Output = Result<(), NisabaError>> + Send,
     {
-        let dir_str = config.connection_string()?;
-        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
-
+        let dir_str = source
+            .client
+            .as_path()
+            .ok_or(NisabaError::Missing("No csv dir path provided".into()))?;
         // Collect CSV paths first
         let csv_paths: Vec<_> = fs::read_dir(dir_str)?
             .filter_map(|e| e.ok())
@@ -79,10 +79,10 @@ impl CsvInferenceEngine {
                         .unwrap();
                     {
                         let mut stats = rt.block_on(infer_stats.lock());
-                        stats.tables_processed += 1;
+                        stats.tables_found += 1;
                     }
 
-                    match self.infer_single_csv(path, &silo_id) {
+                    match self.infer_single_csv(path, &source.metadata.silo_id) {
                         Ok(table_def) => {
                             {
                                 let mut stats = rt.block_on(infer_stats.lock());
@@ -174,10 +174,6 @@ impl CsvInferenceEngine {
 }
 
 impl SchemaInferenceEngine for CsvInferenceEngine {
-    fn can_handle(&self, backend: &StorageBackend) -> bool {
-        matches!(backend, StorageBackend::Csv)
-    }
-
     fn engine_name(&self) -> &str {
         "csv"
     }
@@ -202,7 +198,7 @@ impl ExcelInferenceEngine {
 
     pub fn excel_store_infer<F, Fut>(
         &self,
-        config: &StorageConfig,
+        source: &Source,
         infer_stats: Arc<Mutex<InferenceStats>>,
         workers: usize,
         on_tables: F,
@@ -211,9 +207,10 @@ impl ExcelInferenceEngine {
         F: Fn(Vec<TableDef>) -> Fut + Sync,
         Fut: Future<Output = Result<(), NisabaError>> + Send,
     {
-        let dir_str = config.connection_string()?;
-        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
-
+        let dir_str = source
+            .client
+            .as_path()
+            .ok_or(NisabaError::Missing("No excel directory provided".into()))?;
         // Collect Excel paths first
         let excel_paths: Vec<_> = fs::read_dir(dir_str)?
             .filter_map(|e| e.ok())
@@ -242,10 +239,10 @@ impl ExcelInferenceEngine {
 
                     {
                         let mut stats = rt.block_on(infer_stats.lock());
-                        stats.tables_processed += 1;
+                        stats.tables_found += 1;
                     }
 
-                    match self.infer_single_excel(path, &silo_id) {
+                    match self.infer_single_excel(path, &source.metadata.silo_id) {
                         Ok(table_defs) => {
                             let tables_count = table_defs.len();
                             let fields_count: usize =
@@ -341,10 +338,6 @@ impl ExcelInferenceEngine {
 }
 
 impl SchemaInferenceEngine for ExcelInferenceEngine {
-    fn can_handle(&self, backend: &StorageBackend) -> bool {
-        matches!(backend, StorageBackend::Excel)
-    }
-
     fn engine_name(&self) -> &str {
         "excel"
     }
@@ -367,7 +360,7 @@ impl ParquetInferenceEngine {
 
     pub fn parquet_store_infer<F, Fut>(
         &self,
-        config: &StorageConfig,
+        source: &Source,
         infer_stats: Arc<Mutex<InferenceStats>>,
         workers: usize,
         on_tables: F,
@@ -376,8 +369,10 @@ impl ParquetInferenceEngine {
         F: Fn(Vec<TableDef>) -> Fut + Sync,
         Fut: Future<Output = Result<(), NisabaError>> + Send,
     {
-        let dir_str = config.connection_string()?;
-        let silo_id = format!("{}-{}", config.backend, Uuid::now_v7());
+        let dir_str = source
+            .client
+            .as_path()
+            .ok_or(NisabaError::Missing("No parquet directory provided".into()))?;
 
         // Collect Parquet paths first
         let parquet_paths: Vec<_> = fs::read_dir(dir_str)?
@@ -399,10 +394,10 @@ impl ParquetInferenceEngine {
                         .unwrap();
                     {
                         let mut stats = rt.block_on(infer_stats.lock());
-                        stats.tables_processed += 1;
+                        stats.tables_found += 1;
                     }
 
-                    match self.infer_single_parquet(path, &silo_id) {
+                    match self.infer_single_parquet(path, &source.metadata.silo_id) {
                         Ok(table_def) => {
                             {
                                 let mut stats = rt.block_on(infer_stats.lock());
@@ -476,10 +471,6 @@ impl ParquetInferenceEngine {
 }
 
 impl SchemaInferenceEngine for ParquetInferenceEngine {
-    fn can_handle(&self, backend: &StorageBackend) -> bool {
-        matches!(backend, StorageBackend::Parquet)
-    }
-
     fn engine_name(&self) -> &str {
         "parquet"
     }
@@ -778,27 +769,31 @@ fn calamine_type_to_arrow(values: &[&Data]) -> DataType {
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
 
     use crate::{AnalyzerConfig, LatentStore};
 
     use super::*;
 
-    #[test]
-    fn test_csv_inference() {
-        let config = StorageConfig::new_file_backend(StorageBackend::Csv, "./assets/csv").unwrap();
+    #[tokio::test]
+    async fn test_csv_inference() {
+        let source = Source::csv("./assets/csv", None).unwrap();
 
         let csv_inference = CsvInferenceEngine::new(None, None);
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(block_on(LatentStore::new(None, None)).unwrap());
+        let latent_store = Arc::new(
+            LatentStore::builder()
+                .analyzer_config(Arc::new(AnalyzerConfig::default()))
+                .build()
+                .await
+                .unwrap(),
+        );
 
-        let table_handler =
-            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+        let table_handler = latent_store.table_handler::<TableRep>();
 
         let result = csv_inference
-            .csv_store_infer(&config, stats, 4, |table_defs| async {
+            .csv_store_infer(&source, stats, 4, |table_defs| async {
                 table_handler.store_tables(table_defs).await?;
                 Ok(())
             })
@@ -807,21 +802,25 @@ mod tests {
         assert_eq!(result.len(), 9);
     }
 
-    #[test]
-    fn test_xlsx_inference() {
-        let config =
-            StorageConfig::new_file_backend(StorageBackend::Excel, "./assets/xlsx").unwrap();
+    #[tokio::test]
+    async fn test_xlsx_inference() {
+        let source = Source::excel("./assets/xlsx", None).unwrap();
 
         let excel_inference = ExcelInferenceEngine::new(None, None);
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(block_on(LatentStore::new(None, None)).unwrap());
-        let table_handler =
-            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+        let latent_store = Arc::new(
+            LatentStore::builder()
+                .analyzer_config(Arc::new(AnalyzerConfig::default()))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let table_handler = latent_store.table_handler::<TableRep>();
 
         let result = excel_inference
-            .excel_store_infer(&config, stats, 4, |table_defs| async {
+            .excel_store_infer(&source, stats, 4, |table_defs| async {
                 table_handler.store_tables(table_defs).await?;
                 Ok(())
             })
@@ -830,21 +829,25 @@ mod tests {
         assert_eq!(result.len(), 9);
     }
 
-    #[test]
-    fn test_parquet_inference() {
-        let config =
-            StorageConfig::new_file_backend(StorageBackend::Excel, "./assets/parquet").unwrap();
+    #[tokio::test]
+    async fn test_parquet_inference() {
+        let source = Source::parquet("./assets/parquet", None).unwrap();
 
         let parquet_inference = ParquetInferenceEngine::new(None);
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(block_on(LatentStore::new(None, None)).unwrap());
-        let table_handler =
-            latent_store.table_handler::<TableRep>(Arc::new(AnalyzerConfig::default()));
+        let latent_store = Arc::new(
+            LatentStore::builder()
+                .analyzer_config(Arc::new(AnalyzerConfig::default()))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let table_handler = latent_store.table_handler::<TableRep>();
 
         let result = parquet_inference
-            .parquet_store_infer(&config, stats, 4, |table_defs| async {
+            .parquet_store_infer(&source, stats, 4, |table_defs| async {
                 table_handler.store_tables(table_defs).await?;
                 Ok(())
             })

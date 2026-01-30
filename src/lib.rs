@@ -6,12 +6,16 @@ mod error;
 mod types;
 
 pub use analyzer::{
-    AnalyzerConfig, SchemaAnalyzerBuilder,
-    catalog::{StorageBackend, StorageConfig},
+    AnalyzerConfig, SchemaAnalyzer,
+    datastore::Source,
     inference::{
         CsvInferenceEngine, ExcelInferenceEngine, MySQLInferenceEngine, NoSQLInferenceEngine,
         ParquetInferenceEngine, PostgreSQLInferenceEngine, SchemaInferenceEngine,
         SqliteInferenceEngine,
     },
+    probe::{ScoringConfig, SimilarityConfig},
     retriever::LatentStore,
 };
+
+pub use fastembed::EmbeddingModel;
+pub use lancedb::DistanceType;
