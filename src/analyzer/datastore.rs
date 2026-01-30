@@ -81,6 +81,7 @@ impl std::fmt::Display for FileStoreType {
     }
 }
 
+/// Network-based Data Sources
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DatabaseType {
     MongoDB,
@@ -100,6 +101,7 @@ impl std::fmt::Display for DatabaseType {
     }
 }
 
+/// Data Source with connection and metadata like identifier
 pub struct Source {
     pub client: Arc<SourceClient>,
     pub metadata: SourceMetadata,
