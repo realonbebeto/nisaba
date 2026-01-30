@@ -1,18 +1,33 @@
-use nisaba::{LatentStore, SchemaAnalyzerBuilder, StorageBackend, StorageConfig};
+use nisaba::{
+    AnalyzerConfig, DistanceType, EmbeddingModel, SchemaAnalyzer, ScoringConfig, SimilarityConfig,
+    Source,
+};
 
 #[tokio::main]
 async fn main() {
-    let csv_config = StorageConfig::new_file_backend(StorageBackend::Csv, "./assets/csv").unwrap();
-
-    let latent_store = LatentStore::new(None, None).await.unwrap();
-
-    let parquet_config =
-        StorageConfig::new_file_backend(StorageBackend::Parquet, "./assets/parquet").unwrap();
-    // analyzer
-    let analyzer = SchemaAnalyzerBuilder::new()
-        .with_storage_configs(vec![csv_config, parquet_config])
-        .with_latent_store(latent_store)
+    let config = AnalyzerConfig::builder()
+        .sample_size(1000)
+        .scoring(ScoringConfig {
+            type_weight: 0.65,
+            structure_weight: 0.35,
+        })
+        .similarity(SimilarityConfig {
+            threshold: 0.59,
+            top_k: Some(7),
+            algorithm: DistanceType::Cosine,
+        })
         .build();
+
+    // analyzer
+    let analyzer = SchemaAnalyzer::builder()
+        .name("nisaba")
+        .config(config)
+        .embedding_model(EmbeddingModel::MultilingualE5Small)
+        .source(Source::csv("./assets/csv", None).unwrap())
+        .sources(vec![Source::parquet("./assets/parquet", None).unwrap()])
+        .build()
+        .await
+        .unwrap();
 
     let _result = analyzer.analyze().await.unwrap();
 }
