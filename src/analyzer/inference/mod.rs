@@ -3,9 +3,13 @@
 //!
 //! Overview
 //! - [`CastSafety`]: A rule based type to ensure type promotion is within allowable constraints.
-//! - [`FileInferenceEngine`]: A type that is responsible for CSV, Excel and Parquet store inference.
+//! - [`CsvInferenceEngine`]: A type that is responsible for CSV store inference.
+//! - [`ExcelInferenceEngine`]: A type that is responsible for  Excel store inference.
+//! - [`ParquetInferenceEngine`]: A type that is responsible for Parquet store inference.
 //! - [`NoSQLInferenceEngine`]: A type that is repsonsible for MongoDB store inference.
-//! - [`SQLInferenceEngine`]: A type responsible for MySQL, PostgreSQL, Sqlite store inference.
+//! - [`MySqlInferenceEngine`]: A type responsible for MySQL store inference.
+//! - [`PostgreSQLInferenceEngine`]: A type responsible PostgreSQL store inference.
+//! - [`SqliteInferenceEngine`]: A type responsible for Sqlite store inference.
 //!
 
 use arrow::{
