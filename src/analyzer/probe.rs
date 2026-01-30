@@ -400,7 +400,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::Database(DatabaseType::MongoDB) => {
-                    let mongo_inferer = NoSQLInferenceEngine::new(None);
+                    let mongo_inferer = NoSQLInferenceEngine::new();
                     mongo_inferer
                         .mongodb_store_infer(
                             source,

@@ -33,21 +33,17 @@ use crate::{
 ///
 /// * `sample_size`: The `sample_size` property in `NoSQLInferenceEngine` represents the size
 ///   of the sample data that will be used by the inference engine for analysis.
-pub struct NoSQLInferenceEngine {
-    sample_size: usize,
-}
+pub struct NoSQLInferenceEngine;
 
 impl Default for NoSQLInferenceEngine {
     fn default() -> Self {
-        Self { sample_size: 1000 }
+        Self
     }
 }
 
 impl NoSQLInferenceEngine {
-    pub fn new(sample_size: Option<usize>) -> Self {
-        NoSQLInferenceEngine {
-            sample_size: sample_size.unwrap_or(1000),
-        }
+    pub fn new() -> Self {
+        NoSQLInferenceEngine
     }
 
     /// The function `infer_from_mongodb` asynchronously infers table definitions from MongoDB
@@ -100,7 +96,7 @@ impl NoSQLInferenceEngine {
                 let collection = db.collection::<Document>(&collection_name);
                 let cursor = collection
                     .find(doc! {})
-                    .limit(self.sample_size as i64)
+                    .limit(source.metadata.num_rows as i64)
                     .await?;
 
                 let docs: Vec<Document> = cursor.try_collect().await?;
@@ -498,7 +494,7 @@ mod tests {
 
         field_handler.initialize().await.unwrap();
 
-        let nosql_inference = NoSQLInferenceEngine::default();
+        let nosql_inference = NoSQLInferenceEngine::new();
 
         let result = nosql_inference
             .mongodb_store_infer(
