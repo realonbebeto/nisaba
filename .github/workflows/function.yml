@@ -80,7 +80,7 @@ jobs:
         run: uv python install 3.12.12
 
       - name: Install Requirements
-        run: uv pip install -r scripts/pyproject.toml
+        run: uv pip install --system -r scripts/pyproject.toml
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
@@ -121,7 +121,7 @@ jobs:
         run: uv python install 3.12.12
 
       - name: Install Requirements
-        run: uv pip install -r scripts/pyproject.toml
+        run: uv pip install --system -r scripts/pyproject.toml
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
