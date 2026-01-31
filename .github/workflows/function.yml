@@ -25,13 +25,53 @@ jobs:
           - os: ubuntu-latest
             rust: nightly
 
+    services: &services
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: mysql_store
+          MYSQL_USER: mysql
+          MYSQL_PASSWORD: mysql
+          MYSQL_ROOT_PASSWORD: mysql
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -pmysql"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      mongodb:
+        image: mongo:8
+        env:
+          MONGO_INITDB_DATABASE: mongo_store
+          MONGO_INITDB_ROOT_USERNAME: mongo
+          MONGO_INITDB_ROOT_PASSWORD: mongo
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd="mongosh --eval 'db.runCommand({ping: 1})' --quiet"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: true
-
-      - name: DB Services
-        uses: ./.github/workflows/databases.yml
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -68,13 +108,11 @@ jobs:
   minimal:
     runs-on: ubuntu-latest
     name: ubuntu / stable / minimal-versions
+    services: *services
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: true
-
-      - name: DB Services
-        uses: ./.github/workflows/databases.yml
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
