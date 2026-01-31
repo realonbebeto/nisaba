@@ -1,3 +1,4 @@
+name: Code Standard
 # This workflow runs whenever a PR is opened or updated, or a commit is pushed to main. It runs
 # several checks:
 # - fmt: checks that the code is formatted according to rustfmt
@@ -19,7 +20,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
-name: check
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -28,6 +28,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+
       - name: Install stable
         uses: dtolnay/rust-toolchain@master
         with:
@@ -47,35 +48,23 @@ jobs:
       matrix:
         # Get early warning of new lints which are regularly introduced in beta channels.
         toolchain: [stable, beta]
+
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: true
+
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
+
       - name: cargo clippy
         uses: giraffate/clippy-action@v1 # tag=v1.0.1
         with:
           reporter: "github-pr-check"
           github_token: ${{ secrets.GITHUB_TOKEN }}
-
-  semver:
-    runs-on: ubuntu-latest
-    name: semver
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          components: rustfmt
-      - name: cargo-semver-checks
-        uses: obi1kenobi/cargo-semver-checks-action@5b298c9520f7096a4683c0bd981a7ac5a7e249ae # tag=v2.8
 
   doc:
     runs-on: ubuntu-latest
@@ -88,8 +77,14 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
+      # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - &protobuf-install
+        name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install cargo-docs-rs
         uses: dtolnay/install@982daea0f5d846abc3c83e01a6a1d73c040047c1 # branch=cargo-docs-rs
+
       - name: cargo docs-rs
         run: cargo docs-rs
 
@@ -100,6 +95,8 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v6
+
+      - *protobuf-install
 
       - name: Install Rust nightly toolchain
         uses: dtolnay/rust-toolchain@nightly

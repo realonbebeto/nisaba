@@ -1,6 +1,8 @@
+name: Periodic Function
 # Run scheduled (rolling) jobs on a nightly basis, as your crate may break independently of any
 # given PR. E.g., updates to rust nightly and updates to this crates dependencies. See check.yml for
 # information about how the concurrency cancellation and workflow triggering works
+
 permissions:
   contents: read
 on:
@@ -12,11 +14,53 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-name: rolling
+
 jobs:
   nightly:
     runs-on: ubuntu-latest
     name: ubuntu / nightly
+    services: &services
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: mysql_store
+          MYSQL_USER: mysql
+          MYSQL_PASSWORD: mysql
+          MYSQL_ROOT_PASSWORD: mysql
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -pmysql"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      mongodb:
+        image: mongo:8
+        env:
+          MONGO_INITDB_DATABASE: mongo_store
+          MONGO_INITDB_ROOT_USERNAME: mongo
+          MONGO_INITDB_ROOT_PASSWORD: mongo
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd="mongosh --eval 'db.runCommand({ping: 1})' --quiet"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
     steps:
       - uses: actions/checkout@v6
         with:
@@ -29,10 +73,14 @@ jobs:
         run: uv python install 3.12.12
 
       - name: Install Requirements
-        run: uv pip install -r pyproject.toml
+        run: uv pip install -r scripts/pyproject.toml
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
+
+      # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install nightly
         uses: dtolnay/rust-toolchain@master
@@ -44,11 +92,12 @@ jobs:
         run: cargo generate-lockfile
 
       - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --all-features --verbose -- --test-threads=1
 
   update:
     runs-on: ubuntu-latest
     name: ubuntu / beta / updated
+    services: *services
     steps:
       - uses: actions/checkout@v6
         with:
@@ -61,10 +110,14 @@ jobs:
         run: uv python install 3.12.12
 
       - name: Install Requirements
-        run: uv pip install -r pyproject.toml
+        run: uv pip install -r scripts/pyproject.toml
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
+
+        # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
@@ -76,6 +129,6 @@ jobs:
         run: cargo update
       - name: cargo test
         if: hashFiles('Cargo.lock') != ''
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --all-features --verbose -- --test-threads=1
         env:
           RUSTFLAGS: -D deprecated

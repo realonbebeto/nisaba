@@ -2,6 +2,7 @@
 
 .DS_Store
 .fastembed_cache
+.ruff_cache
 
 *.csv
 *.sqlite

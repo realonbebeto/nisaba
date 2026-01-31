@@ -3,16 +3,21 @@
 //!
 //! Overview
 //! - [`CastSafety`]: A rule based type to ensure type promotion is within allowable constraints.
-//! - [`FileInferenceEngine`]: A type that is responsible for CSV, Excel and Parquet store inference.
+//! - [`CsvInferenceEngine`]: A type that is responsible for CSV store inference.
+//! - [`ExcelInferenceEngine`]: A type that is responsible for  Excel store inference.
+//! - [`ParquetInferenceEngine`]: A type that is responsible for Parquet store inference.
 //! - [`NoSQLInferenceEngine`]: A type that is repsonsible for MongoDB store inference.
-//! - [`SQLInferenceEngine`]: A type responsible for MySQL, PostgreSQL, Sqlite store inference.
+//! - [`MySqlInferenceEngine`]: A type responsible for MySQL store inference.
+//! - [`PostgreSQLInferenceEngine`]: A type responsible PostgreSQL store inference.
+//! - [`SqliteInferenceEngine`]: A type responsible for Sqlite store inference.
 //!
 
 use arrow::{
     array::{
-        Array, AsArray, Date32Array, Date64Array, FixedSizeBinaryArray, GenericStringArray,
-        Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray,
-        RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        Array, AsArray, BooleanBuilder, Date32Array, Date64Array, FixedSizeBinaryArray,
+        Float64Array, GenericStringArray, Int8Array, Int16Array, Int32Array, Int64Array,
+        Int64Builder, LargeBinaryArray, LargeStringArray, RecordBatch, StringArray, UInt8Array,
+        UInt16Array, UInt32Array, UInt64Array,
     },
     datatypes::{
         DataType, Field, Int16Type, Int32Type, Int64Type, Schema, TimeUnit,
@@ -33,150 +38,155 @@ mod nosql;
 mod promote;
 mod sql;
 
-pub use file::FileInferenceEngine;
+pub use file::{CsvInferenceEngine, ExcelInferenceEngine, ParquetInferenceEngine};
 pub use nosql::NoSQLInferenceEngine;
-pub use sql::SQLInferenceEngine;
+pub use sql::{MySQLInferenceEngine, PostgreSQLInferenceEngine, SqliteInferenceEngine};
 
 use crate::{
-    analyzer::catalog::{StorageBackend, StorageConfig},
+    analyzer::inference::promote::{ColumnStats, TypeLatticeResolver, cast_utf8_column},
     error::NisabaError,
     types::{FieldDef, TableDef},
 };
 
-// =================================================
-// Inference Engine Registry
-// =================================================
-/// Registry of available inference engines
-///
-#[allow(dead_code)]
-#[derive(Debug)]
-/// The `InferenceEngineRegistry` contains a HashMap of engine names to boxed trait
-/// objects implementing the `SchemaInferenceEngine` trait.
-///
-/// Properties:
-///
-/// * `engines`: The `engines` property in `InferenceEngineRegistry` is a HashMap that stores
-///   a mapping between strings (keys) and boxed trait objects that implement the `SchemaInferenceEngine`
-///   trait.
-pub struct InferenceEngineRegistry {
-    engines: HashMap<String, Box<dyn SchemaInferenceEngine>>,
-}
-
-impl Default for InferenceEngineRegistry {
-    fn default() -> Self {
-        let file_engine = FileInferenceEngine::new();
-        let sql_engine = SQLInferenceEngine::new();
-        let nosql_engine = NoSQLInferenceEngine::new();
-
-        let mut engines: HashMap<String, Box<dyn SchemaInferenceEngine>> = HashMap::new();
-
-        engines.insert(
-            file_engine.engine_name().to_lowercase(),
-            Box::new(file_engine),
-        );
-
-        engines.insert(
-            sql_engine.engine_name().to_lowercase(),
-            Box::new(sql_engine),
-        );
-
-        engines.insert(
-            nosql_engine.engine_name().to_lowercase(),
-            Box::new(nosql_engine),
-        );
-
-        Self { engines }
-    }
-}
-
-impl InferenceEngineRegistry {
-    pub fn new() -> Self {
-        InferenceEngineRegistry::default()
-    }
-
-    pub fn size(&self) -> usize {
-        self.engines.len()
-    }
-
-    /// The function `add_engine` adds a schema inference engine to a collection based on its engine
-    /// name. Can be used to replace an existing engine
-    ///
-    /// Arguments:
-    ///
-    /// * `engine`: The `engine` parameter is a `Box` containing a trait object of type `SchemaInferenceEngine`.
-    pub fn add_engine(&mut self, engine: Box<dyn SchemaInferenceEngine>) {
-        self.engines
-            .insert(engine.engine_name().to_lowercase(), engine);
-    }
-
-    /// The function `get_engine` returns an optional reference to a `SchemaInferenceEngine` based on
-    /// the provided `DataStoreType`.
-    ///
-    /// Arguments:
-    ///
-    /// * `store_type`: The `store_type` parameter is a reference to a `DataStoreType` enum that is used
-    ///   to identify the type of data store for which you want to retrieve the schema inference engine.
-    ///
-    /// Returns:
-    ///
-    /// The `get_engine` function returns an `Option` containing a reference to a `dyn
-    /// SchemaInferenceEngine` trait object based on the provided `DataStoreType`.
-    pub fn get_engine(&self, backend: &StorageBackend) -> Option<&dyn SchemaInferenceEngine> {
-        self.engines
-            .values()
-            .find(|eng| eng.can_handle(backend))
-            .map(|eng| eng.as_ref())
-    }
-
-    /// The `infer_schema` function infers table schemas based on the data location using the
-    /// specified engine.
-    ///
-    /// Arguments:
-    ///
-    /// * `location`: The `location` parameter in the `infer_schema` function represents the location of
-    ///   the data from which you want to infer the schema.
-    ///
-    /// Returns:
-    ///
-    /// A Result containing a vector of TableSchema objects or an NisabaError if there is an issue with the
-    /// operation.
-    pub fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError> {
-        let engine = self.get_engine(&config.backend).ok_or_else(|| {
-            NisabaError::Unsupported(format!(
-                "No engine available for store type: {:?}",
-                config.backend
-            ))
-        })?;
-
-        let table_defs = engine.infer_schema(config)?;
-
-        Ok(table_defs)
-    }
-
-    pub fn discover_ecosystem(
-        &self,
-        configs: Vec<StorageConfig>,
-    ) -> Result<Vec<TableDef>, NisabaError> {
-        let mut table_defs = Vec::new();
-
-        for config in configs {
-            table_defs.extend(self.infer_schema(&config)?);
-        }
-
-        Ok(table_defs)
-    }
-}
-
 /// Trait for schema inference engines
 pub trait SchemaInferenceEngine: std::fmt::Debug + Send + Sync {
-    /// Infer schema from a data source
-    fn infer_schema(&self, config: &StorageConfig) -> Result<Vec<TableDef>, NisabaError>;
-
-    /// Check if this engine can handle the given data source
-    fn can_handle(&self, backend: &StorageBackend) -> bool;
-
     /// Get the name of the inference engine
     fn engine_name(&self) -> &str;
+
+    fn enrich_table_def(
+        &self,
+        table_def: &mut TableDef,
+        batch: &mut RecordBatch,
+    ) -> Result<(), NisabaError> {
+        // Enriching
+        // 1. Type promotion and type confidence
+        // 2. cardinality
+        // 3. avg_byte_length
+        // 4. is_monotonic
+        // 5. char_class_signature
+        // 6. char_max_length
+        // 7. numeric_precision
+        // 8. numeric_scale
+        // 9. datetime_precision
+
+        let schema = batch.schema();
+
+        let resolver = TypeLatticeResolver::new();
+
+        for (index, field) in schema.fields().iter().enumerate() {
+            let mut column = batch.column(index).clone();
+
+            if self.engine_name() == "sqlite" {
+                // Handling Boolean/Int64 from f64 for SQLite
+                if column.data_type() == &DataType::Float64 {
+                    let arr = column.as_any().downcast_ref::<Float64Array>().ok_or(
+                        ArrowError::CastError("Failed to cast to Float64Array".into()),
+                    )?;
+
+                    if arr
+                        .iter()
+                        .flatten()
+                        .collect::<Vec<f64>>()
+                        .iter()
+                        .all(|val| val.is_finite() && (*val == 0.0 || *val == 1.0))
+                    {
+                        let mut builder = BooleanBuilder::new();
+                        for index in 0..arr.len() {
+                            if arr.is_null(index) {
+                                builder.append_null();
+                            } else {
+                                builder.append_value(arr.value(index) != 0.0);
+                            }
+                        }
+                        column = Arc::new(builder.finish());
+                    } else if arr
+                        .iter()
+                        .flatten()
+                        .collect::<Vec<f64>>()
+                        .iter()
+                        .all(|val| {
+                            val.is_finite()
+                                && val.fract().abs() < f64::MIN_POSITIVE
+                                && val.abs() < i64::MAX as f64
+                        })
+                    {
+                        let mut builder = Int64Builder::new();
+
+                        for index in 0..arr.len() {
+                            if arr.is_null(index) {
+                                builder.append_null();
+                            } else {
+                                builder.append_value(arr.value(index) as i64);
+                            }
+                        }
+
+                        column = Arc::new(builder.finish());
+                    }
+
+                    if let Some(ff) = table_def
+                        .fields
+                        .iter_mut()
+                        .find(|f| f.name == *field.name())
+                    {
+                        ff.canonical_type = column.data_type().clone();
+                    }
+                }
+            }
+
+            match column.data_type() {
+                DataType::LargeUtf8 | DataType::Utf8 | DataType::Int32 | DataType::Int64 => {
+                    let stats = ColumnStats::new(&column);
+                    let resolved_result = resolver.promote(column.data_type(), &stats)?;
+
+                    if let Some(ff) = table_def
+                        .fields
+                        .iter_mut()
+                        .find(|f| f.name == *field.name())
+                    {
+                        ff.type_confidence = Some(resolved_result.confidence);
+
+                        // Update char_max_length
+                        match (&ff.canonical_type, &resolved_result.dest_type) {
+                            (DataType::Utf8, DataType::Utf8)
+                            | (DataType::LargeUtf8, DataType::LargeUtf8)
+                            | (DataType::Utf8View, DataType::Utf8View) => {
+                                ff.char_max_length = resolved_result.character_maximum_length;
+                            }
+
+                            (_, _) => {}
+                        }
+
+                        // Update type related signals when there is a mismatch on types
+                        if ff.canonical_type != resolved_result.dest_type {
+                            ff.canonical_type = resolved_result.dest_type;
+                            ff.type_confidence = Some(resolved_result.confidence);
+                            ff.is_nullable = resolved_result.nullable;
+                            ff.char_max_length = resolved_result.character_maximum_length;
+                            ff.numeric_precision = resolved_result.numeric_precision;
+                            ff.numeric_scale = resolved_result.numeric_scale;
+                            ff.datetime_precision = resolved_result.datetime_precision;
+
+                            // Very important for field values in batch to be updated
+                            cast_utf8_column(batch, &ff.name, &ff.canonical_type)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            let metrics = compute_field_metrics(batch)?;
+
+            for field in &mut table_def.fields {
+                if let Some(m) = metrics.get(&field.name) {
+                    field.char_class_signature = Some(m.char_class_signature);
+                    field.is_monotonic = m.monotonicity;
+                    field.cardinality = Some(m.cardinality);
+                    field.avg_byte_length = m.avg_byte_length;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]

@@ -26,16 +26,47 @@ async fn main() {
         .source(
             Source::files(FileStoreType::Csv)
                 .path("./assets/csv")
-                .num_rows(1000)
-                .has_header(true)
                 .build()
                 .unwrap(),
         )
         .sources(vec![
             Source::files(FileStoreType::Parquet)
                 .path("./assets/parquet")
-                .num_rows(1000)
                 .build()
+                .unwrap(),
+            Source::files(FileStoreType::Excel)
+                .path("./assets/xlsx")
+                .build()
+                .unwrap(),
+            Source::mongodb()
+                .auth("mongodb", "mongodb")
+                .host("localhost")
+                .database("mongo_store")
+                .pool_size(5)
+                .port(27017)
+                .build()
+                .unwrap(),
+            Source::mysql()
+                .auth("mysql", "mysql")
+                .host("localhost")
+                .port(3306)
+                .database("mysql_store")
+                .build()
+                .await
+                .unwrap(),
+            Source::postgresql()
+                .auth("postgres", "postgres")
+                .host("localhost")
+                .database("postgres")
+                .port(5432)
+                .namespace("public")
+                .build()
+                .await
+                .unwrap(),
+            Source::sqlite()
+                .path("./assets/sqlite/nisaba.sqlite")
+                .build()
+                .await
                 .unwrap(),
         ])
         .build()

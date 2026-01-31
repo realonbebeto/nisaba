@@ -1,7 +1,7 @@
 <h1 align="center">nisaba</h1>
 <div align="center">
  <strong>
-   Data quality, reconciliation, and validation framework across different data store in Rust
+   A data quality, reconciliation, and validation framework across different data store in Arrow Rust.
  </strong>
 </div>
 
@@ -44,7 +44,7 @@ In Mesopotamian/Sumeria mythology, [Nisaba](https://en.wikipedia.org/wiki/Nisaba
 ## Core Concepts and Features
 
 
-- **Reconciliation-first architecture**: Establishes dataset equivalence across systems as the strongest guarantee of correctness.
+- **Reconciliation-first architecture**: Establishes dataset equivalence across systems as the strongest guarantee of correctness using [Lancedb](https://docs.rs/lancedb/latest/lancedb/index.html) for vector persistence and similarity search and [Fastembed](https://docs.rs/fastembed/latest/fastembed/index.html) for embedding generation
 
 - **Deterministic reconciliation engine**: Produces order-independent, repeatable results suitable for CI and automated workflows.
 
@@ -59,7 +59,7 @@ To get started, just add to Cargo.toml
 
 ```toml
 [dependencies]
-nisaba = { version = "0.2.0-beta" }
+nisaba = { version = "0.2.0" }
 ```
 
 ## Usage
@@ -68,22 +68,51 @@ nisaba = { version = "0.2.0-beta" }
 Prefer using the example and [the generated docs](https://docs.rs/nisaba) or:
 
 ```rust,no_run
-use nisaba::{SchemaAnalyzerBuilder, StorageBackend, StorageConfig};
+use nisaba::{
+    AnalyzerConfig, DistanceType, EmbeddingModel, FileStoreType, SchemaAnalyzer, ScoringConfig,
+    SimilarityConfig, Source,
+};
 
 #[tokio::main]
 async fn main() {
+    let config = AnalyzerConfig::builder()
+        .sample_size(1000)
+        .scoring(ScoringConfig {
+            type_weight: 0.65,
+            structure_weight: 0.35,
+        })
+        .similarity(SimilarityConfig {
+            threshold: 0.59,
+            top_k: Some(7),
+            algorithm: DistanceType::Cosine,
+        })
+        .build();
+
     // analyzer
-    let analyzer = SchemaAnalyzerBuilder::default().build();
-
-    let csv_config = StorageConfig::new_file_backend(StorageBackend::Csv, "./assets/csv").unwrap();
-
-    let parquet_config =
-        StorageConfig::new_file_backend(StorageBackend::Parquet, "./assets/parquet").unwrap();
-
-    let _result = analyzer
-        .analyze(vec![csv_config, parquet_config])
+    let analyzer = SchemaAnalyzer::builder()
+        .name("nisaba")
+        .config(config)
+        .embedding_model(EmbeddingModel::MultilingualE5Small)
+        .source(
+            Source::files(FileStoreType::Csv)
+                .path("./assets/csv")
+                .num_rows(1000)
+                .has_header(true)
+                .build()
+                .unwrap(),
+        )
+        .sources(vec![
+            Source::files(FileStoreType::Parquet)
+                .path("./assets/parquet")
+                .num_rows(1000)
+                .build()
+                .unwrap(),
+        ])
+        .build()
         .await
         .unwrap();
+
+    let _result = analyzer.analyze().await.unwrap();
 }
 
 ```
@@ -130,8 +159,7 @@ recent versions.
 
 Licensed under either of
 
-* Apache License, Version 2.0
-   ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
 
 at your option.
 

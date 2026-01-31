@@ -3,6 +3,10 @@ pub enum NisabaError {
     // Schema & Type
     #[error("Unsupported: {0}")]
     Unsupported(String),
+    #[error("No TableDef Generated")]
+    NoTableDefGenerated,
+    #[error("No RecordBatch")]
+    NoRecordBatch,
 
     // Resources
     #[error("Invalid: {0}")]
@@ -39,4 +43,6 @@ pub enum NisabaError {
     Utf8(#[from] std::string::FromUtf8Error),
     #[error("error: {0}")]
     Graph(graphrs::Error),
+    #[error(transparent)]
+    ThreadPoolBuilder(#[from] rayon::ThreadPoolBuildError),
 }

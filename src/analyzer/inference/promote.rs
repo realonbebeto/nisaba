@@ -49,11 +49,8 @@ impl CastSafety {
 ///
 /// Arguments:
 ///
-/// * `from`: The `from` parameter in the `cast_safety` function represents the data type that you want
-///   to cast from. It is a reference to a `DataType` enum which specifies the original data type of the
-///   value you want to convert.
-/// * `to`: The `to` parameter in the `cast_safety` function represents the data type that you want to
-///   cast to.
+/// * `from`: The `from` parameter represents the data type that you want to cast from.
+/// * `to`: The `to` parameter represents the data type that you want to cast to.
 ///
 /// Returns:
 ///
@@ -118,21 +115,6 @@ pub fn cast_safety(from: &DataType, to: &DataType) -> CastSafety {
 #[derive(Debug, Clone)]
 /// The `DeltaStats`  contains fields for various statistical ratios and values related to
 /// delta calculations.
-///
-/// Properties:
-///
-/// * `small_delta_ratio`: The `small_delta_ratio` property in `DeltaStats` represents the
-///   ratio of deltas that have an absolute value less than or equal to a specified threshold, typically
-///   denoted as `small_threshold`.
-/// * `mode_ratio`: The `mode_ratio` property in `DeltaStats` represents the fraction of
-///   deltas that are equal to the mode_delta value. This value indicates how frequently the mode_delta
-///   value appears in the dataset compared to other delta values.
-/// * `long_run_ratio`: The `long_run_ratio` property in `DeltaStats` represents the fraction
-///   of rows belonging to the longest uninterrupted delta run. This means it indicates the proportion of
-///   consecutive rows in the data where the delta values remain the same without interruption.
-/// * `median_abs_delta`: The `median_abs_delta` property in `DeltaStats` represents the
-///   median value of the absolute deltas in a dataset. This value is calculated by arranging all the
-///   absolute delta values in ascending order and then selecting the middle value.
 pub struct DeltaStats {
     /// Ratio of |delta| ≤ small_threshold (usually 1 or unit-sized)
     pub small_delta_ratio: f32,
@@ -145,72 +127,40 @@ pub struct DeltaStats {
 }
 
 /// The `ColumnStats` represents statistical information about a column in a dataset.
-///
-/// Properties:
-///
-/// * `sample_size`: The `sample_size` property in `ColumnStats` represents the total number
-///   of values in the column that were used to calculate the statistics.
-/// * `null_count`: The `null_count` property in `ColumnStats` represents the number of null
-///   values present in the column for which the statistics are being calculated.
-/// * `distinct_count`: The `distinct_count` property in `ColumnStats` represents the number
-///   of unique or distinct values present in the column for which the statistics are being calculated.
-/// * `avg_length`: The `avg_length` property in `ColumnStats` represents the average length
-///   of values in the column. It is an `Option<f32>`, which means it can either contain the average
-///   length as a floating-point number or be `None` if the average length when applicable.
-/// * `sample_values`: The `sample_values` property in `ColumnStats` is a reference to a
-///   dynamic array (`dyn Array`) with an associated lifetime `'a`. This allows you to store a collection
-///   of values of unknown type that implement the `Array` trait.
-/// * `min_val`: The `min_val` property in `ColumnStats` represents the minimum value found
-///   in the column for which these statistics are calculated. It is an optional field, meaning it may or
-///   may not have a value..
-/// * `max_val`: The `max_val` property in `ColumnStats` represents the maximum value found
-///   in the column for which the statistics are being calculated. It is an `Option<i64>`, meaning it can
-///   either contain the maximum value as an `i64` or be `None`.
-/// * `quantiles_i32`: The `quantiles_i32` property in `ColumnStats` represents an optional
-///   array of 7 integers. These integers correspond to different percentiles for the data in the column.
-/// * `longest_run_ratio`: The `longest_run_ratio` property in `ColumnStats` represents the
-///   ratio of the length of the longest consecutive run of identical values to the total number of values
-///   in the column. It can be used to analyze the presence of patterns or repeated values within the data.
-/// * `delta_stats`: The `delta_stats` property in `ColumnStats` likely represents statistics
-///   related to the differences or changes between consecutive values in the column.
-/// * `entropy`: The `entropy` property in `ColumnStats` represents the entropy value of the
-///   column. Entropy is a measure of the amount of uncertainty or randomness in the data. In the context
-///   of data analysis, entropy is often used to quantify the information content or predictability of a
-///   data.
-/// * `temporal_mod_entropy`: The `temporal_mod_entropy` property in `ColumnStats` represents
-///   the modulo entropy value for temporal(time related) data in the column.
-/// * `character_max_length`: The `character_max_length` property in `ColumnStats` represents
-///   the maximum length of characters in the column. It indicates the maximum number of characters
-///   present in any value within the column.
-/// * `character_min_length`: The `character_min_length` property in `ColumnStats` represents
-///   the minimum length of characters in the column. It is an optional field, meaning it may or may not
-///   have a value associated with it.
-/// * `numeric_precision`: The `numeric_precision` property in `ColumnStats` represents the
-///   precision of numeric values in the column. It indicates the total number of digits that can be
-///   stored, both to the left and right of the decimal point.
-/// * `numeric_scale`: The `numeric_scale` property in `ColumnStats` represents the scale of
-///   a numeric value. In the context of numeric data types, scale refers to the number of digits to the
-///   right of the decimal point in a number.
-/// * `datetime_precision`: The `datetime_precision` property in `ColumnStats` represents the
-///   precision of datetime values in the column. This property is an `Option<i32>`, meaning it can either
-///   contain an integer value representing the precision or be `None` when applicable.
 pub struct ColumnStats<'a> {
+    /// number of values in the column that were used to calculate the statistics.
     pub sample_size: usize,
+    /// number of null values present in the column for which the statistics are being calculated.
     pub null_count: usize,
+    /// number of unique or distinct values present in the column for which the statistics are being calculated.
     pub distinct_count: usize,
+    /// average length of values in the column for Utf8 values
     pub avg_length: Option<f32>,
+    /// reference to a dynamic array (`dyn Array`) with values for metric/statistics computation
     pub sample_values: &'a dyn Array,
+    /// minimum value found in the column for which these statistics are calculated.
     pub min_val: Option<i64>,
+    /// maximum value found in the column for which these statistics are calculated.
     pub max_val: Option<i64>,
+    /// different percentiles for the data
     pub quantiles_i32: Option<[i32; 7]>, // p01, p05, p25, p50, p75, p95, p99
+    /// ratio of the length of the longest consecutive run of identical values to the total number of values
     pub longest_run_ratio: Option<f32>,
+    /// statistics related to the differences or changes between consecutive values
     pub delta_stats: Option<DeltaStats>,
+    /// measure of the amount of uncertainty or randomness in the data
     pub entropy: f32,
+    /// measure of the amount of uncertainty related to temporal(time related) data
     pub temporal_mod_entropy: Option<f32>,
+    /// maximum length of characters in the column for any value within the column
     pub character_max_length: Option<i32>,
+    /// minimum length of characters in the column for any value within the column
     pub character_min_length: Option<i32>,
+    /// number of digits that can be stored, both to the left and right of the decimal point.
     pub numeric_precision: Option<i32>,
+    /// number of digits to the right of the decimal point in a number
     pub numeric_scale: Option<i32>,
+    /// precision of datetime values in the column
     pub datetime_precision: Option<i32>,
 }
 
@@ -279,9 +229,7 @@ impl<'a> ColumnStats<'a> {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `extract_stats_from_int_array` function is a
-    ///   mutable reference to a `ColumnStats` struct or object. This function extracts statistics
-    ///   from an array of integer values stored in the `sample_values` field of the `ColumnStats` object
+    /// * `stats`: The `stats` parameter is a mutable reference to a `ColumnStats` struct or object.
     ///
     /// Returns:
     ///
@@ -315,9 +263,7 @@ impl<'a> ColumnStats<'a> {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `extract_stats_from_string_array` function seems to be a
-    ///   mutable reference to a struct or object of type `ColumnStats`. This function is designed to
-    ///   extract various statistics from a sample of string values stored in the `stats` object.
+    /// * `stats`: The `stats` parameter is a mutable reference to a struct or object of type `ColumnStats`.
     ///
     /// Returns:
     ///
@@ -351,15 +297,12 @@ impl<'a> ColumnStats<'a> {
         Ok(())
     }
 
-    /// The function calculates the normalized entropy of a collection of strings.
+    /// The function flattens the iterator to iterate over the actual strings and then calculates the entropy based
+    /// on the character frequencies in those strings.
     ///
     /// Arguments:
     ///
-    /// * `values`: The `normalized_string_entropy` function calculates the entropy of a collection of
-    ///   strings. The `values` parameter is an iterator that yields `Option<&str>` values.
-    ///
-    /// The function flattens the iterator to iterate over the actual strings and then calculates the entropy based
-    /// on the character frequencies in those strings.
+    /// * `values`: The `values` parameter is an iterator that yields `Option<&str>` values.
     ///
     /// Returns:
     ///
@@ -398,9 +341,7 @@ impl<'a> ColumnStats<'a> {
     ///
     /// Arguments:
     ///
-    /// * `values`: The function `normalized_int_entropy` calculates the normalized entropy of a
-    ///   sequence of integers. The input parameter `values` is an iterator that yields integer values.
-    ///   The function processes the values to compute the entropy based on the frequency of integer values.
+    /// * `values`: This parameter is an iterator that yields integer values.
     ///
     /// Returns:
     ///
@@ -444,37 +385,20 @@ impl<'a> ColumnStats<'a> {
 #[derive(Debug, Clone)]
 /// The `PromotionResult` represents the result of a data type promotion operation,
 /// including destination type, confidence level, and optional metadata.
-///
-/// Properties:
-///
-/// * `dest_type`: The `dest_type` property in `PromotionResult` represents the data type to
-///   which a value is being promoted or converted.
-/// * `confidence`: The `confidence` property in `PromotionResult` represents the level of
-///   certainty or belief in the promotion result. It is a floating-point number (`f32`) typically ranging
-///   from 0.0 to 1.0, where 1.0 indicates full confidence in the result.
-/// * `nullable`: The `nullable` property in `PromotionResult` indicates whether the
-///   corresponding data type can accept NULL values or not. If `nullable` is `true`, it means that NULL
-///   values are allowed for that data type.
-/// * `character_maximum_length`: The `character_maximum_length` property in the `PromotionResult`
-///   represents the maximum length of characters for a data type. It is an optional field, meaning
-///   it may or may not have a value depending on the data type being described.
-/// * `numeric_precision`: The `numeric_precision` property in `PromotionResult` represents
-///   the precision of a numeric data type. It specifies the total number of digits that can be stored,
-///   including both the digits before and after the decimal point.
-/// * `numeric_scale`: The `numeric_scale` property in `PromotionResult` represents the scale
-///   of a numeric value. In the context of numeric data types, scale refers to the number of digits to
-///   the right of the decimal point in a number.
-/// * `datetime_precision`: The `datetime_precision` property in `PromotionResult` represents
-///   the precision of a datetime data type. This property is an `Option<i32>`, meaning it can either
-///   contain an integer value representing the precision or be `None` if the precision is not applicable
-///   or not specified.
 pub struct PromotionResult {
+    /// data type to which a value is being promoted or converted.
     pub dest_type: DataType,
+    /// the level of certainty or belief in the promotion result
     pub confidence: f32,
+    /// Flag indicating whether the corresponding data type can accept NULL values or not
     pub nullable: bool,
+    /// maximum length of characters for a data type
     pub character_maximum_length: Option<i32>,
+    /// total number of digits that can be stored, including both the digits before and after the decimal point.
     pub numeric_precision: Option<i32>,
+    /// number of digits to the right of the decimal point in a number.
     pub numeric_scale: Option<i32>,
+    /// precision of a datetime data type
     pub datetime_precision: Option<i32>,
 }
 
@@ -645,14 +569,10 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
-    ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided profile.
+    /// * `dest`: The `dest` parameter is a reference of the desired data type to detect based on the
+    ///   input string and column statistics.
     ///
     /// Returns:
     ///
@@ -751,10 +671,8 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
-    ///   profile.
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided profile.
     ///
     /// Returns:
     ///
@@ -798,9 +716,8 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
     ///
     /// Returns:
@@ -842,9 +759,8 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
     ///
     /// Returns:
@@ -881,14 +797,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to be detectected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1009,14 +922,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to be detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1058,14 +968,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to be detectected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1125,14 +1032,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to be detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1173,14 +1077,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1229,14 +1130,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1280,14 +1178,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1327,14 +1222,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1364,14 +1256,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
@@ -1415,14 +1304,11 @@ impl TypeLatticeResolver {
     ///
     /// Arguments:
     ///
-    /// * `stats`: The `stats` parameter in the `detect_type_from_string` function represents the a reference
-    ///   to actual data and statistics of a column, such as the number of null values, unique values,
-    ///   data distribution, etc. It is used to calculate the likelihood of a certain data type based on the provided
+    /// * `stats`: The `stats` parameter is a reference to actual data and statistics of a column
+    ///   used to calculate the likelihood of a certain data type based on the provided
     ///   profile.
-    /// * `dest`: The `dest` parameter in the `detect_type_from_string` function represents the desired
-    ///   data type that you want to detect based on the input string and column statistics. It is of type
-    ///   `DataType`, which is an enum that can have various variants like `Utf8`, `FixedSizeBinary`,
-    ///   `Date etc.
+    /// * `dest`: The `dest` parameter represents the desired data type that needs to detected
+    ///   based on the input string and column statistics.
     ///
     /// Returns:
     ///
