@@ -57,14 +57,14 @@ pub trait Storable: Send + Sync {
 
 #[derive(Clone)]
 /// The `LatentStore` represents an interface to access Lancedb store
-///
-/// Properties:
-///
-/// * `conn`: The `conn` property is a `Connection` to Lancedb.
 pub struct LatentStore {
+    /// Access to Lancedb
     conn: Connection,
+    /// Embedding model for vector generation
     embedding_model: Arc<Mutex<TextEmbedding>>,
+    /// Analyzer config
     config: Arc<AnalyzerConfig>,
+    /// Number of dimension for the model
     dim: usize,
 }
 
@@ -72,12 +72,7 @@ impl LatentStore {
     pub fn builder() -> LatentStoreBuilder {
         LatentStoreBuilder::builder()
     }
-    /// The `table_handler` is a function represents the result of a clustering process
-    ///
-    /// Arguments:
-    ///
-    /// * `conn`: The `conn` property is a `Connection` to Lancedb.
-    /// * `config`: The `config` property is a shared holder to AnalyzerConfig.
+    /// The `table_handler` is a function giving access to a Lancedb table
     ///
     /// Returns:
     ///
@@ -149,18 +144,17 @@ impl LatentStoreBuilder {
 }
 
 /// The `TableHandler` represents a connection over store element which implements Storable trait
-///
-/// Properties:
-///
-/// * `conn`: The `conn` property is a `Connection` to Lancedb.
-/// * `config`: The `config` property is a shared holder to AnalyzerConfig.
 pub struct TableHandler<T: Storable> {
+    /// Access to Lancedb
     conn: Connection,
+    /// Analyzer config
     config: Arc<AnalyzerConfig>,
     // Marker to hold a Storable type
     // Used to associate the handler with a specific Storable type
     _phantom: PhantomData<T>,
+    /// Embedding model for vector generation
     embedding_model: Arc<Mutex<TextEmbedding>>,
+    /// Number of dimension for the model
     dim: usize,
 }
 
@@ -200,13 +194,11 @@ impl<T: Storable> TableHandler<T> {
     }
 
     /// This `search_table_rep` function performs a search in the latent store and returns a vector
-    /// of FieldMatch or TableMatch
+    /// of TableMatch
     ///
     /// Arguments:
     ///
     /// * `item`: The `item` parameter is the unique identifier of a stored TableRep.
-    ///
-    /// * `config`: The `config` property is a shared holder to AnalyzerConfig.
     ///
     /// * `columns`: The `columns` property is a Vec of String used to return the required
     ///   set of fields from the latent store.
@@ -267,14 +259,12 @@ impl<T: Storable> TableHandler<T> {
         Ok(results)
     }
 
-    /// This `search_table_rep` function performs a search in the latent store and returns a vector
-    /// of FieldMatch or TableMatch
+    /// This `search_field_def` function performs a search in the latent store and returns a vector
+    /// of FieldMatch
     ///
     /// Arguments:
     ///
     /// * `item`: The `item` parameter is the unique identifier of a stored TableRep.
-    ///
-    /// * `config`: The `config` property is a shared holder to AnalyzerConfig.
     ///
     /// * `columns`: The `columns` property is a Vec of String used to return the required
     ///   set of fields from the latent store.
@@ -406,8 +396,6 @@ impl<T: Storable> TableHandler<T> {
                     .for_each(|x| *x /= height as f32);
 
                 let total_field_embed: DVector<f32> = DVector::from_vec(total_field_embed);
-
-                // SVector::from_vec(total_field_embed);
 
                 // Table Stats Embedding
                 let structure_embed = t.structure().embedding();

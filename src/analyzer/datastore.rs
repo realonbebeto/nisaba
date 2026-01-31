@@ -605,7 +605,7 @@ impl SQLiteSourceBuilder {
     }
 }
 
-/// The `validate_credentials` function runs specific validations on credentials for network-nased backend
+/// The `validate_credentials` function runs specific validations on Credentials
 ///
 /// Returns:
 ///
@@ -624,7 +624,7 @@ fn validate_credentials(credentials: Option<Credentials>) -> Result<Credentials,
     Ok(creds)
 }
 
-/// The `validate_database_name` function runs specific validations on database_name for network-nased backend
+/// The `validate_database_name` function runs specific validations on database_name
 ///
 /// Returns:
 ///
@@ -647,7 +647,7 @@ fn validate_database(database: Option<String>) -> Result<String, NisabaError> {
     Ok(database)
 }
 
-/// The `validate_host` function runs specific validations on host for network-nased backend
+/// The `validate_host` function runs specific validations on host
 ///
 /// Returns:
 ///
@@ -718,7 +718,7 @@ fn validate_path(path: Option<PathBuf>) -> Result<PathBuf, NisabaError> {
     Ok(path)
 }
 
-/// The `validate_port` function runs specific validations on port for network-nased backend
+/// The `validate_port` function runs specific validations on port
 ///
 /// Returns:
 ///

@@ -13,7 +13,6 @@
 //! - [`SchemaInferenceEngine`]: A primary trait representing built-in functionality for store reads and inference.
 //! - [`Storable`]: A vital trait to give access to attributes of store elements (TableDef/FieldDef)
 //! - [`Source`]: An type providing access ro various data sources
-//! - [`StorageConfig`]: An type responsible for giving access to storage backends.
 //! - [`TableCluster`]: A type responsible to hold table results from a reconciliation run.
 //! - [`TypeLatticeResolver`]: A promotion type that is responsible to promoted field types that come from file based stores.
 //!

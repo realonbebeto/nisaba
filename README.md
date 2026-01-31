@@ -1,7 +1,7 @@
 <h1 align="center">nisaba</h1>
 <div align="center">
  <strong>
-   Data quality, reconciliation, and validation framework across different data store in Rust
+   A data quality, reconciliation, and validation framework across different data store in Arrow Rust.
  </strong>
 </div>
 
@@ -44,7 +44,7 @@ In Mesopotamian/Sumeria mythology, [Nisaba](https://en.wikipedia.org/wiki/Nisaba
 ## Core Concepts and Features
 
 
-- **Reconciliation-first architecture**: Establishes dataset equivalence across systems as the strongest guarantee of correctness.
+- **Reconciliation-first architecture**: Establishes dataset equivalence across systems as the strongest guarantee of correctness using [Lancedb](https://docs.rs/lancedb/latest/lancedb/index.html) for vector persistence and similarity search and [Fastembed](https://docs.rs/fastembed/latest/fastembed/index.html) for embedding generation
 
 - **Deterministic reconciliation engine**: Produces order-independent, repeatable results suitable for CI and automated workflows.
 

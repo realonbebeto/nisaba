@@ -58,18 +58,21 @@ impl MySQLInferenceEngine {
     }
 
     /// The function `mysql_store_infer` asynchronously reads table fields from a MySQL database,
-    /// converts them into table definitions, enriches the definitions with various metrics, and returns
-    /// the resulting table definitions.
+    /// converts them into table definitions, enriches the definitions with various metrics,
+    /// and stores them in the vector database, and returns the resulting table representations.
     ///
     /// Arguments:
     ///
-    /// * `config`: The `config` parameter in the `mysql_store_infer` function is of type
-    ///   `&StorageConfig`, which is a reference to a `StorageConfig` struct. This parameter is used to
-    ///   provide configuration details for connecting to a MySQL database, such as the connection string.
+    /// * `source`: The `source` parameter is of type `&Source`, which is a reference to a `Source`
+    ///   struct. This parameter is used to provide access and metadata to the MySQL database.
+    /// * `infer_stats`: The `infer_stats` parameter is of type `InferenceStats` behind Arc and Mutex
+    ///   for shared access to track inference metrics globally
+    /// * `on_table`: The 'on_table' parameter is an async callback function that provides storage
+    ///   functionality of TableDefs.
     ///
     /// Returns:
     ///
-    /// The function `mysql_store_infer` returns a `Result` containing a vector of `TableDef` structs or
+    /// The function `mysql_store_infer` returns a `Result` containing a vector of `TableRep` structs or
     /// a `NisabaError` if an error occurs during the process.
     pub async fn mysql_store_infer<F, Fut>(
         &self,
@@ -176,13 +179,18 @@ impl PostgreSQLInferenceEngine {
             sample_size: sample_size.unwrap_or(1000),
         }
     }
-    /// The function `postgres_store_infer` reads table definitions from a PostgreSQL database, enriches
-    /// them with additional metrics, and returns the resulting table definitions.
+    /// The function `postgres_store_infer` asynchronously reads table fields from a PostgreSQL database,
+    /// converts them into table definitions, enriches the definitions with various metrics,
+    /// and stores them in the vector database, and returns the resulting table representations.
     ///
     /// Arguments:
     ///
-    /// * `config`: The `config` parameter is of type `&StorageConfig` and is used to
-    ///   provide configuration details for connecting to a PostgreSQL database.
+    /// * `source`: The `source` parameter is of type `&Source`, which is a reference to a `Source`
+    ///   struct. This parameter is used to provide access and metadata to the PostgreSQL database.
+    /// * `infer_stats`: The `infer_stats` parameter is of type `InferenceStats` behind Arc and Mutex
+    ///   for shared access to track inference metrics globally
+    /// * `on_table`: The 'on_table' parameter is an async callback function that provides storage
+    ///   functionality of TableDefs.
     ///
     /// Returns:
     ///
@@ -287,18 +295,22 @@ impl SqliteInferenceEngine {
             sample_size: sample_size.unwrap_or(1000),
         }
     }
-    /// The function `infer_from_sqlite` asynchronously reads data from a SQLite database,
-    /// processes and enriches the data by inferring types and other metrics for each table, and returns
-    /// a vector of `TableDef` structs.
+    /// The function `sqlite_store_infer` asynchronously reads data from a SQLite database,
+    /// processes and enriches the data by inferring types and other metrics for each table,
+    /// stores them in the vector database, and returns the resulting table representations.
     ///
     /// Arguments:
     ///
     /// * `config`: The `config` parameter  is of type `&StorageConfig`and used to
     ///   provide configuration settings for a SQLite instance.
+    /// * `infer_stats`: The `infer_stats` parameter is of type `InferenceStats` behind Arc and Mutex
+    ///   for shared access to track inference metrics globally
+    /// * `on_table`: The 'on_table' parameter is an async callback function that provides storage
+    ///   functionality of TableDefs.
     ///
     /// Returns:
     ///
-    /// The function `infer_from_sqlite` returns a `Result` containing a vector of `TableDef` structs or
+    /// The function `sqlite_store_infer` returns a `Result` containing a vector of `TableRep` structs or
     /// a `NisabaError` if an error occurs during the execution.
     pub async fn sqlite_store_infer<F, Fut>(
         &self,
@@ -418,7 +430,7 @@ async fn read_postgres_table(
 /// Arguments:
 ///
 /// * `pool`: The `pool` parameter is a reference of `PgPool`, providing pooled connections to Postgres.
-/// * `config`: The `config` parameter is a reference of `StorageConfig`, providing database connection details.
+/// * `source`: The `source` parameter is a reference of `Source`, providing data source metadata.
 ///
 /// Returns:
 ///
@@ -594,7 +606,7 @@ async fn read_mysql_table(
 /// Arguments:
 ///
 /// * `pool`: The `pool` parameter is a reference of `MySqlPool`, providing pooled connections to MySQL.
-/// * `config`: The `config` parameter is a reference of `StorageConfig`, providing database connection details.
+/// * `silo_id`: The `silo_id` parameter is a string slice, providing data store identifier.
 ///
 /// Returns:
 ///
@@ -694,7 +706,7 @@ async fn read_sqlite_table(
 /// Arguments:
 ///
 /// * `pool`: The `pool` parameter is a reference of `SqlitePool`, providing pooled connections to Sqlite.
-/// * `config`: The `config` parameter is a reference of `StorageConfig`, providing database connection details.
+/// * `silo_id`: The `config` parameter is a string slice, providing data store identifier.
 ///
 /// Returns:
 ///
@@ -1084,6 +1096,7 @@ where
 ///   values are to be appended to.
 /// * `row`: The `row` parameter is reference to type implementing sqlx `Row`, providing the source data.
 /// * `index`: The `index` parameter is reference to `str`, providing the location in the source data (row).
+/// * `scale`: The `scale` parameter details the number of digits in a decimal after the point.
 ///
 /// Returns:
 ///
