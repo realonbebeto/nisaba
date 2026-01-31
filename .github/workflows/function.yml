@@ -1,9 +1,11 @@
 permissions:
   contents: read
+
 on:
   push:
     branches: [main]
   pull_request:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -23,6 +25,34 @@ jobs:
           - os: ubuntu-latest
             rust: nightly
     steps:
+      - name: Postgres Service
+        uses: ikalnytskyi/action-setup-postgres@v8
+        with:
+          username: postgres
+          password: postgres
+          database: test
+          port: 5432
+          postgres-version: "18"
+
+      - name: MySQL service
+        uses: mirromutth/mysql-action@v1.1
+        with:
+          host port: 3306
+          container port: 3306
+          mysql version: "8.0"
+          mysql database: "mysql_store"
+          mysql root password: "mysql"
+          mysql user: "mysql"
+          mysql password: "mysql"
+
+      - name: MongoDB Service
+        uses: supercharge/mongodb-github-action@1.12.1
+        with:
+          mongodb-port: 27017
+          mongodb-version: "8.2"
+          mongodb-username: mongodb
+          mongodb-password: mongodb
+          mongodb-db: mongodb_store
       - uses: actions/checkout@v6
         with:
           submodules: true
@@ -59,6 +89,34 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / stable / minimal-versions
     steps:
+      - name: Postgres Service
+        uses: ikalnytskyi/action-setup-postgres@v8
+        with:
+          username: postgres
+          password: postgres
+          database: test
+          port: 5432
+          postgres-version: "18"
+
+      - name: MySQL service
+        uses: mirromutth/mysql-action@v1.1
+        with:
+          host port: 3306
+          container port: 3306
+          mysql version: "8.0"
+          mysql database: "mysql_store"
+          mysql root password: "mysql"
+          mysql user: "mysql"
+          mysql password: "mysql"
+
+      - name: MongoDB Service
+        uses: supercharge/mongodb-github-action@1.12.1
+        with:
+          mongodb-port: 27017
+          mongodb-version: "8.2"
+          mongodb-username: mongodb
+          mongodb-password: mongodb
+          mongodb-db: mongodb_store
       - uses: actions/checkout@v6
         with:
           submodules: true
