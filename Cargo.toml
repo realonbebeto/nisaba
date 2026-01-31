@@ -8,8 +8,7 @@ homepage = "https://github.com/realonbebeto/nisaba"
 description = "Data quality, reconciliation, and validation across different data stores"
 repository = "https://github.com/realonbebeto/nisaba"
 keywords = [
-    "dataframe",
-    "schema-engine",
+    "arrow",
     "schema",
     "data-validation",
     "data-reconciliation",
