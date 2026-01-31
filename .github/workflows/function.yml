@@ -50,7 +50,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --all-features --verbose -- --test-threads=1
 
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
@@ -84,7 +84,9 @@ jobs:
           toolchain: nightly
       - name: rustup default stable
         run: rustup default stable
+
       - name: cargo update -Zminimal-versions
         run: cargo +nightly update -Zminimal-versions
+
       - name: cargo test
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --all-features --verbose -- --test-threads=1

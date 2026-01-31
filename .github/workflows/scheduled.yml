@@ -44,7 +44,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --all-features --verbose -- --test-threads=1
 
   update:
     runs-on: ubuntu-latest
@@ -76,6 +76,6 @@ jobs:
         run: cargo update
       - name: cargo test
         if: hashFiles('Cargo.lock') != ''
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test --locked --all-features --verbose -- --test-threads=1
         env:
           RUSTFLAGS: -D deprecated
