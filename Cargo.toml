@@ -47,7 +47,7 @@ sqlx = { version = "0.8.6", features = [
     "mysql",
     "sqlite",
     "chrono",
-    "runtime-async-std-rustls",
+    "runtime-tokio-native-tls",
 ] }
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", default-features = false, features = ["rt"] }
