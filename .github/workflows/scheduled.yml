@@ -19,12 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / nightly
     steps:
-      - name: DB Services
-        uses: ./.github/workflows/databases.yml
-
       - uses: actions/checkout@v6
         with:
           submodules: true
+
+      - name: DB Services
+        uses: ./.github/workflows/databases.yml
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7

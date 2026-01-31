@@ -18,11 +18,11 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
-      - name: DB Services
-        uses: ./.github/workflows/databases.yml
-
       - name: Checkout sources
         uses: actions/checkout@v6
+
+      - name: DB Services
+        uses: ./.github/workflows/databases.yml
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
