@@ -1,0 +1,36 @@
+name: Reusable MySQL Workflow
+on:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_DATABASE: mysql_store
+          MYSQL_USER: mysql
+          MYSQL_PASSWORD: mysql
+          MYSQL_ROOT_PASSWORD: mysql
+        ports:
+          - 3306:3306
+
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+
+      mongodb:
+        image: mongo:8
+        env:
+          MONGO_INITDB_DATABASE: mongo_store
+          MONGO_INITDB_ROOT_USERNAME: mongo
+          MONGO_INITDB_ROOT_PASSWORD: mongo
+
+    steps:
+      - name: Setup
+        run: echo "Dbs running"

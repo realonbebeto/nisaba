@@ -18,34 +18,8 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
-      - name: Postgres Service
-        uses: ikalnytskyi/action-setup-postgres@v8
-        with:
-          username: postgres
-          password: postgres
-          database: test
-          port: 5432
-          postgres-version: "18"
-
-      - name: MySQL service
-        uses: mirromutth/mysql-action@v1.1
-        with:
-          host port: 3306
-          container port: 3306
-          mysql version: "8.0"
-          mysql database: "mysql_store"
-          mysql root password: "mysql"
-          mysql user: "mysql"
-          mysql password: "mysql"
-
-      - name: MongoDB Service
-        uses: supercharge/mongodb-github-action@1.12.1
-        with:
-          mongodb-port: 27017
-          mongodb-version: "8.2"
-          mongodb-username: mongodb
-          mongodb-password: mongodb
-          mongodb-db: mongodb_store
+      - name: DB Services
+        uses: ./.github/workflows/databases.yml
 
       - name: Checkout sources
         uses: actions/checkout@v6
