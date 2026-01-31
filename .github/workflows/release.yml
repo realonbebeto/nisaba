@@ -18,6 +18,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - &protobuf-install
+        name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -43,6 +48,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - *protobuf-install
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
