@@ -3,7 +3,8 @@ name = "nisaba"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-
+documentation = "https://docs.rs/nisaba"
+homepage = "https://github.com/realonbebeto/nisaba"
 description = "Data quality, reconciliation, and validation across different data stores"
 repository = "https://github.com/realonbebeto/nisaba"
 keywords = [
