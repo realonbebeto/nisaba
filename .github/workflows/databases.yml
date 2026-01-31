@@ -1,4 +1,4 @@
-name: Reusable MySQL Workflow
+name: Reusable Databases
 on:
   workflow_call:
 

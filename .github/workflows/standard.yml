@@ -1,3 +1,4 @@
+name: Code Standard
 # This workflow runs whenever a PR is opened or updated, or a commit is pushed to main. It runs
 # several checks:
 # - fmt: checks that the code is formatted according to rustfmt
@@ -19,7 +20,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
-name: check
 jobs:
   fmt:
     runs-on: ubuntu-latest

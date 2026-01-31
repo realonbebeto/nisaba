@@ -1,3 +1,4 @@
+name: Periodic Function
 # Run scheduled (rolling) jobs on a nightly basis, as your crate may break independently of any
 # given PR. E.g., updates to rust nightly and updates to this crates dependencies. See check.yml for
 # information about how the concurrency cancellation and workflow triggering works
@@ -12,7 +13,7 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
-name: rolling
+
 jobs:
   nightly:
     runs-on: ubuntu-latest
