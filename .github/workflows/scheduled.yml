@@ -63,6 +63,10 @@ jobs:
       - name: Seeding Data Stores
         run: python scripts/seed.py
 
+      # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install nightly
         uses: dtolnay/rust-toolchain@master
         with:
@@ -94,6 +98,10 @@ jobs:
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
+
+        # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''

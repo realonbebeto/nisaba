@@ -28,6 +28,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+
       - name: Install stable
         uses: dtolnay/rust-toolchain@master
         with:
@@ -77,7 +78,8 @@ jobs:
         with:
           toolchain: nightly
       # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
-      - name: Install protobuf compiler
+      - &protobuf-install
+        name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install cargo-docs-rs
@@ -93,6 +95,8 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v6
+
+      - *protobuf-install
 
       - name: Install Rust nightly toolchain
         uses: dtolnay/rust-toolchain@nightly

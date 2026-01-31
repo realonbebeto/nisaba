@@ -24,6 +24,7 @@ jobs:
         include:
           - os: ubuntu-latest
             rust: nightly
+
     steps:
       - name: Postgres Service
         uses: ikalnytskyi/action-setup-postgres@v8
@@ -68,6 +69,10 @@ jobs:
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
+
+      # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
@@ -117,6 +122,7 @@ jobs:
           mongodb-username: mongodb
           mongodb-password: mongodb
           mongodb-db: mongodb_store
+
       - uses: actions/checkout@v6
         with:
           submodules: true
@@ -132,6 +138,11 @@ jobs:
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
+
+        # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Install stable
         uses: dtolnay/rust-toolchain@master
         with:
