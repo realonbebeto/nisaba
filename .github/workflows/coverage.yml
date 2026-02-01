@@ -69,14 +69,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install Deps
-        run: uv sync --directory=scripts
-
-      - name: Activate Venv
-        run: source scripts/.venv/bin/activate
-
-      - name: Seeding Data Stores
-        run: python scripts/seed.py
+      - name: Setup Python Env & Seed
+        run: |
+          uv sync --directory=scripts
+          source scripts/.venv/bin/activate
+          python scripts/seed.py
 
       # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
       - name: Install protobuf compiler
