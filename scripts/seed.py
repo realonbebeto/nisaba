@@ -177,8 +177,6 @@ class DataSeeder:
         if len(destinations) == 0:
             destinations = ["csv", "excel", "mongo", "mysql", "postgres", "sqlite"]
 
-        print(destinations)
-
         # Read once
         try:
             df = pd.read_parquet(f"assets/parquet/{filename}")
@@ -235,8 +233,6 @@ class DataSeeder:
         """
 
         all_results = []
-
-        print(max_workers)
 
         # Process files with limited concurrency to avoid overwhelming the system
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
