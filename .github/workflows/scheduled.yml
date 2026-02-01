@@ -72,10 +72,13 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install Deps & Activate Venv
-        run: |
-          uv sync --directory=scripts
-          source scripts/.venv/bin/activate
+      - &install-deps
+        name: Install Deps
+        run: uv sync --directory=scripts
+
+      - &activate-venv
+        name: Activate Venv
+        run: source scripts/.venv/bin/activate
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
@@ -111,10 +114,9 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Install Deps & Activate Venv
-        run: |
-          uv sync --directory=scripts
-          source scripts/.venv/bin/activate
+      - *install-deps
+
+      - *activate-venv
 
       - name: Seeding Data Stores
         run: python scripts/seed.py
