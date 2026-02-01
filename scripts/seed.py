@@ -174,8 +174,10 @@ class DataSeeder:
             destinations: List of destinations ('csv', 'excel', 'mongo', 'mysql', 'postgres', 'sqlite')
                          If None, writes to all destinations
         """
-        if destinations is None:
+        if len(destinations) == 0:
             destinations = ["csv", "excel", "mongo", "mysql", "postgres", "sqlite"]
+
+        print(destinations)
 
         # Read once
         try:
@@ -223,7 +225,7 @@ class DataSeeder:
 
         return results
 
-    def seed_all_files(self, destinations: List[str] = [], max_workers: int = 3):
+    def seed_all_files(self, destinations: List[str] = [], max_workers: int = 4):
         """
         Process all files, each with parallel writes to destinations
 
@@ -233,6 +235,8 @@ class DataSeeder:
         """
 
         all_results = []
+
+        print(max_workers)
 
         # Process files with limited concurrency to avoid overwhelming the system
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -258,7 +262,7 @@ def main():
     seeder = DataSeeder()
 
     try:
-        seeder.seed_all_files()
+        seeder.seed_all_files(max_workers=4)
 
     except Exception as e:
         raise Exception(str(e))
