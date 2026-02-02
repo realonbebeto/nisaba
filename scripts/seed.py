@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List
@@ -33,6 +34,8 @@ class DataSeeder:
         self.postgres_engine = create_engine(
             "postgresql+psycopg2://postgres:postgres@localhost:5432/postgres"
         )
+
+        os.makedirs("./assets/sqlite", exist_ok=True)
 
         self.sqlite_engine = create_engine("sqlite:///assets/sqlite/nisaba.sqlite")
 
