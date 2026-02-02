@@ -23,19 +23,9 @@ async fn main() {
         .name("nisaba")
         .config(config)
         .embedding_model(EmbeddingModel::MultilingualE5Small)
-        .source(
-            Source::files(FileStoreType::Csv)
-                .path("./assets/csv")
-                .build()
-                .unwrap(),
-        )
         .sources(vec![
             Source::files(FileStoreType::Parquet)
                 .path("./assets/parquet")
-                .build()
-                .unwrap(),
-            Source::files(FileStoreType::Excel)
-                .path("./assets/xlsx")
                 .build()
                 .unwrap(),
             Source::mongodb()
@@ -51,20 +41,6 @@ async fn main() {
                 .host("localhost")
                 .port(3306)
                 .database("mysql_store")
-                .build()
-                .await
-                .unwrap(),
-            Source::postgresql()
-                .auth("postgres", "postgres")
-                .host("localhost")
-                .database("postgres")
-                .port(5432)
-                .namespace("public")
-                .build()
-                .await
-                .unwrap(),
-            Source::sqlite()
-                .path("./assets/sqlite/nisaba.sqlite")
                 .build()
                 .await
                 .unwrap(),
