@@ -388,7 +388,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::Database(DatabaseType::MySQL) => {
-                    let mysql_inferer = MySQLInferenceEngine::new(None);
+                    let mysql_inferer = MySQLInferenceEngine::new();
 
                     mysql_inferer
                         .mysql_store_infer(source, self.context.stats.clone(), |table_defs| async {
@@ -413,7 +413,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::Database(DatabaseType::PostgreSQL) => {
-                    let postgres_inferer = PostgreSQLInferenceEngine::new(None);
+                    let postgres_inferer = PostgreSQLInferenceEngine::new();
 
                     postgres_inferer
                         .postgres_store_infer(
@@ -428,7 +428,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::Database(DatabaseType::SQLite) => {
-                    let sqlite_inferer = SqliteInferenceEngine::new(None);
+                    let sqlite_inferer = SqliteInferenceEngine::new();
 
                     sqlite_inferer
                         .sqlite_store_infer(

@@ -41,21 +41,17 @@ use crate::{
 // MySQL Inference Engine
 // =================================================
 #[derive(Debug)]
-pub struct MySQLInferenceEngine {
-    sample_size: usize,
-}
+pub struct MySQLInferenceEngine;
 
 impl Default for MySQLInferenceEngine {
     fn default() -> Self {
-        Self { sample_size: 10 }
+        MySQLInferenceEngine
     }
 }
 
 impl MySQLInferenceEngine {
-    pub fn new(sample_size: Option<usize>) -> Self {
-        MySQLInferenceEngine {
-            sample_size: sample_size.unwrap_or(10),
-        }
+    pub fn new() -> Self {
+        MySQLInferenceEngine
     }
 
     /// The function `mysql_store_infer` asynchronously reads table fields from a MySQL database,
@@ -108,7 +104,8 @@ impl MySQLInferenceEngine {
                 let shared_pool = pool.clone();
 
                 async move {
-                    let data = read_mysql_table(&shared_pool, &table_def, self.sample_size).await?;
+                    let data = read_mysql_table(&shared_pool, &table_def, source.metadata.num_rows)
+                        .await?;
 
                     if let Some(mut batch) = data {
                         self.enrich_table_def(&mut table_def, &mut batch)?;
@@ -164,21 +161,17 @@ impl SchemaInferenceEngine for MySQLInferenceEngine {
 // PostgreSQL Inference Engine
 // =================================================
 #[derive(Debug)]
-pub struct PostgreSQLInferenceEngine {
-    sample_size: usize,
-}
+pub struct PostgreSQLInferenceEngine;
 
 impl Default for PostgreSQLInferenceEngine {
     fn default() -> Self {
-        Self { sample_size: 10 }
+        PostgreSQLInferenceEngine
     }
 }
 
 impl PostgreSQLInferenceEngine {
-    pub fn new(sample_size: Option<usize>) -> Self {
-        PostgreSQLInferenceEngine {
-            sample_size: sample_size.unwrap_or(10),
-        }
+    pub fn new() -> Self {
+        PostgreSQLInferenceEngine
     }
     /// The function `postgres_store_infer` asynchronously reads table fields from a PostgreSQL database,
     /// converts them into table definitions, enriches the definitions with various metrics,
@@ -224,7 +217,8 @@ impl PostgreSQLInferenceEngine {
 
                 async move {
                     let data =
-                        read_postgres_table(&shared_pool, &table_def, self.sample_size).await?;
+                        read_postgres_table(&shared_pool, &table_def, source.metadata.num_rows)
+                            .await?;
 
                     if let Some(mut batch) = data {
                         self.enrich_table_def(&mut table_def, &mut batch)?;
@@ -280,21 +274,17 @@ impl SchemaInferenceEngine for PostgreSQLInferenceEngine {
 // PostgreSQL Inference Engine
 // =================================================
 #[derive(Debug)]
-pub struct SqliteInferenceEngine {
-    sample_size: usize,
-}
+pub struct SqliteInferenceEngine;
 
 impl Default for SqliteInferenceEngine {
     fn default() -> Self {
-        Self { sample_size: 10 }
+        SqliteInferenceEngine
     }
 }
 
 impl SqliteInferenceEngine {
-    pub fn new(sample_size: Option<usize>) -> Self {
-        Self {
-            sample_size: sample_size.unwrap_or(10),
-        }
+    pub fn new() -> Self {
+        SqliteInferenceEngine
     }
     /// The function `sqlite_store_infer` asynchronously reads data from a SQLite database,
     /// processes and enriches the data by inferring types and other metrics for each table,
@@ -341,7 +331,8 @@ impl SqliteInferenceEngine {
 
                 async move {
                     let data =
-                        read_sqlite_table(&shared_pool, &table_def, self.sample_size).await?;
+                        read_sqlite_table(&shared_pool, &table_def, source.metadata.num_rows)
+                            .await?;
 
                     if let Some(mut batch) = data {
                         self.enrich_table_def(&mut table_def, &mut batch)?;
@@ -1410,7 +1401,7 @@ mod tests {
 
         field_handler.initialize().await.unwrap();
 
-        let sql_inference = MySQLInferenceEngine::default();
+        let sql_inference = MySQLInferenceEngine::new();
 
         let result = sql_inference
             .mysql_store_infer(&source, stats, |table_defs| async {
@@ -1447,7 +1438,7 @@ mod tests {
 
         field_handler.initialize().await.unwrap();
 
-        let sql_inference = PostgreSQLInferenceEngine::default();
+        let sql_inference = PostgreSQLInferenceEngine::new();
 
         let result = sql_inference
             .postgres_store_infer(&source, stats, |table_defs| async {
@@ -1480,7 +1471,7 @@ mod tests {
 
         field_handler.initialize().await.unwrap();
 
-        let sql_inference = SqliteInferenceEngine::default();
+        let sql_inference = SqliteInferenceEngine::new();
 
         let result = sql_inference
             .sqlite_store_infer(&source, stats, |table_defs| async {
