@@ -124,6 +124,7 @@ impl CsvInferenceEngine {
         // 2. Read batch for stats and promotion(inference)
         let mut csv_reader = ReaderBuilder::new(Arc::new(schema.clone()))
             .with_header(source.metadata.has_header)
+            .with_bounds(0, source.metadata.num_rows)
             .build(file)?;
 
         let record_batch = csv_reader.next();
