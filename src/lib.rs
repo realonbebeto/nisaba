@@ -49,7 +49,7 @@ pub mod test {
     #[tokio::test]
     async fn test_two_silo_probing() {
         let config = AnalyzerConfig::builder()
-            .sample_size(1000)
+            .sample_size(10)
             .scoring(ScoringConfig::default())
             .similarity(SimilarityConfig::default())
             .build();
@@ -61,12 +61,12 @@ pub mod test {
             .sources(vec![
                 Source::files(FileStoreType::Csv)
                     .has_header(true)
-                    .num_rows(1000)
+                    .num_rows(10)
                     .path("./assets/csv")
                     .build()
                     .unwrap(),
                 Source::files(FileStoreType::Parquet)
-                    .num_rows(1000)
+                    .num_rows(10)
                     .path("./assets/parquet")
                     .build()
                     .unwrap(),

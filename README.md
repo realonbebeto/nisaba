@@ -76,7 +76,7 @@ use nisaba::{
 #[tokio::main]
 async fn main() {
     let config = AnalyzerConfig::builder()
-        .sample_size(1000)
+        .sample_size(10)
         .scoring(ScoringConfig {
             type_weight: 0.65,
             structure_weight: 0.35,
@@ -96,7 +96,7 @@ async fn main() {
         .source(
             Source::files(FileStoreType::Csv)
                 .path("./assets/csv")
-                .num_rows(1000)
+                .num_rows(10)
                 .has_header(true)
                 .build()
                 .unwrap(),
@@ -104,7 +104,7 @@ async fn main() {
         .sources(vec![
             Source::files(FileStoreType::Parquet)
                 .path("./assets/parquet")
-                .num_rows(1000)
+                .num_rows(10)
                 .build()
                 .unwrap(),
         ])

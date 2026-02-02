@@ -791,7 +791,7 @@ mod tests {
     async fn test_csv_inference() {
         let source = Source::files(FileStoreType::Csv)
             .path("./assets/csv")
-            .num_rows(1000)
+            .num_rows(10)
             .has_header(true)
             .build()
             .unwrap();
@@ -818,7 +818,7 @@ mod tests {
     async fn test_xlsx_inference() {
         let source = Source::files(FileStoreType::Excel)
             .path("./assets/xlsx")
-            .num_rows(1000)
+            .num_rows(10)
             .has_header(true)
             .build()
             .unwrap();
@@ -844,7 +844,7 @@ mod tests {
     async fn test_parquet_inference() {
         let source = Source::files(FileStoreType::Parquet)
             .path("./assets/parquet")
-            .num_rows(1000)
+            .num_rows(10)
             .build()
             .unwrap();
 

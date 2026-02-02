@@ -6,7 +6,7 @@ use nisaba::{
 #[tokio::main]
 async fn main() {
     let config = AnalyzerConfig::builder()
-        .sample_size(1000)
+        .sample_size(10)
         .scoring(ScoringConfig {
             type_weight: 0.65,
             structure_weight: 0.35,

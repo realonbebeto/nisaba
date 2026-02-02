@@ -33,7 +33,7 @@ impl Default for AnalyzerConfig {
     fn default() -> Self {
         AnalyzerConfig {
             scoring: ScoringConfig::default(),
-            sample_size: Some(1000),
+            sample_size: Some(10),
             similarity: SimilarityConfig::default(),
         }
     }

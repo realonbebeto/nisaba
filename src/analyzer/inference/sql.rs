@@ -47,14 +47,14 @@ pub struct MySQLInferenceEngine {
 
 impl Default for MySQLInferenceEngine {
     fn default() -> Self {
-        Self { sample_size: 1000 }
+        Self { sample_size: 10 }
     }
 }
 
 impl MySQLInferenceEngine {
     pub fn new(sample_size: Option<usize>) -> Self {
         MySQLInferenceEngine {
-            sample_size: sample_size.unwrap_or(1000),
+            sample_size: sample_size.unwrap_or(10),
         }
     }
 
@@ -170,14 +170,14 @@ pub struct PostgreSQLInferenceEngine {
 
 impl Default for PostgreSQLInferenceEngine {
     fn default() -> Self {
-        Self { sample_size: 1000 }
+        Self { sample_size: 10 }
     }
 }
 
 impl PostgreSQLInferenceEngine {
     pub fn new(sample_size: Option<usize>) -> Self {
         PostgreSQLInferenceEngine {
-            sample_size: sample_size.unwrap_or(1000),
+            sample_size: sample_size.unwrap_or(10),
         }
     }
     /// The function `postgres_store_infer` asynchronously reads table fields from a PostgreSQL database,
@@ -286,14 +286,14 @@ pub struct SqliteInferenceEngine {
 
 impl Default for SqliteInferenceEngine {
     fn default() -> Self {
-        Self { sample_size: 1000 }
+        Self { sample_size: 10 }
     }
 }
 
 impl SqliteInferenceEngine {
     pub fn new(sample_size: Option<usize>) -> Self {
         Self {
-            sample_size: sample_size.unwrap_or(1000),
+            sample_size: sample_size.unwrap_or(10),
         }
     }
     /// The function `sqlite_store_infer` asynchronously reads data from a SQLite database,
