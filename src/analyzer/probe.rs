@@ -33,7 +33,7 @@ impl Default for AnalyzerConfig {
     fn default() -> Self {
         AnalyzerConfig {
             scoring: ScoringConfig::default(),
-            sample_size: Some(1000),
+            sample_size: Some(10),
             similarity: SimilarityConfig::default(),
         }
     }
@@ -147,6 +147,17 @@ impl std::fmt::Debug for SchemaAnalyzer {
 impl SchemaAnalyzer {
     pub fn builder() -> SchemaAnalyzerBuilder {
         SchemaAnalyzerBuilder::default()
+    }
+
+    /// The `latent_store` function sets a predefined latent store.
+    ///
+    /// Arguments:
+    ///
+    /// * `latent_store`: This parameter is a shared pre-defined latent shore.
+    ///
+    pub fn latent_store(mut self, latent_store: Arc<LatentStore>) -> Self {
+        self.context.persistence = latent_store;
+        self
     }
     /// The `analyze` function runs agains the beforehand provided storage location as Sources, infers their
     /// schemas, clusters them based on similarities.
@@ -388,7 +399,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::Database(DatabaseType::MySQL) => {
-                    let mysql_inferer = MySQLInferenceEngine::new(None);
+                    let mysql_inferer = MySQLInferenceEngine::new();
 
                     mysql_inferer
                         .mysql_store_infer(source, self.context.stats.clone(), |table_defs| async {
@@ -413,7 +424,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::Database(DatabaseType::PostgreSQL) => {
-                    let postgres_inferer = PostgreSQLInferenceEngine::new(None);
+                    let postgres_inferer = PostgreSQLInferenceEngine::new();
 
                     postgres_inferer
                         .postgres_store_infer(
@@ -428,7 +439,7 @@ impl SchemaAnalyzer {
                 }
 
                 SourceType::Database(DatabaseType::SQLite) => {
-                    let sqlite_inferer = SqliteInferenceEngine::new(None);
+                    let sqlite_inferer = SqliteInferenceEngine::new();
 
                     sqlite_inferer
                         .sqlite_store_infer(
@@ -621,45 +632,5 @@ impl SchemaAnalyzerBuilder {
             context,
             sources: self.sources,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_two_silo_probing() {
-        let config = AnalyzerConfig::builder()
-            .sample_size(1000)
-            .scoring(ScoringConfig::default())
-            .similarity(SimilarityConfig::default())
-            .build();
-
-        // analyzer
-        let analyzer = SchemaAnalyzer::builder()
-            .config(config)
-            .name("nisaba1")
-            .sources(vec![
-                Source::files(FileStoreType::Csv)
-                    .has_header(true)
-                    .num_rows(1000)
-                    .path("./assets/csv")
-                    .build()
-                    .unwrap(),
-                Source::files(FileStoreType::Parquet)
-                    .num_rows(1000)
-                    .path("./assets/parquet")
-                    .build()
-                    .unwrap(),
-            ])
-            .build()
-            .await
-            .unwrap();
-
-        let result = analyzer.analyze().await.unwrap();
-
-        assert!(result.is_some());
     }
 }

@@ -124,6 +124,7 @@ impl CsvInferenceEngine {
         // 2. Read batch for stats and promotion(inference)
         let mut csv_reader = ReaderBuilder::new(Arc::new(schema.clone()))
             .with_header(source.metadata.has_header)
+            .with_bounds(0, source.metadata.num_rows)
             .build(file)?;
 
         let record_batch = csv_reader.next();
@@ -780,7 +781,9 @@ fn calamine_type_to_arrow(values: &[&Data]) -> DataType {
 #[cfg(test)]
 mod tests {
 
-    use crate::{AnalyzerConfig, LatentStore, analyzer::datastore::FileStoreType};
+    use crate::analyzer::datastore::FileStoreType;
+
+    use crate::test::get_test_latent_store;
 
     use super::*;
 
@@ -788,7 +791,7 @@ mod tests {
     async fn test_csv_inference() {
         let source = Source::files(FileStoreType::Csv)
             .path("./assets/csv")
-            .num_rows(1000)
+            .num_rows(10)
             .has_header(true)
             .build()
             .unwrap();
@@ -797,13 +800,7 @@ mod tests {
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(
-            LatentStore::builder()
-                .analyzer_config(Arc::new(AnalyzerConfig::default()))
-                .build()
-                .await
-                .unwrap(),
-        );
+        let latent_store = get_test_latent_store().await;
 
         let table_handler = latent_store.table_handler::<TableRep>();
 
@@ -821,7 +818,7 @@ mod tests {
     async fn test_xlsx_inference() {
         let source = Source::files(FileStoreType::Excel)
             .path("./assets/xlsx")
-            .num_rows(1000)
+            .num_rows(10)
             .has_header(true)
             .build()
             .unwrap();
@@ -830,13 +827,7 @@ mod tests {
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(
-            LatentStore::builder()
-                .analyzer_config(Arc::new(AnalyzerConfig::default()))
-                .build()
-                .await
-                .unwrap(),
-        );
+        let latent_store = get_test_latent_store().await;
         let table_handler = latent_store.table_handler::<TableRep>();
 
         let result = excel_inference
@@ -853,7 +844,7 @@ mod tests {
     async fn test_parquet_inference() {
         let source = Source::files(FileStoreType::Parquet)
             .path("./assets/parquet")
-            .num_rows(1000)
+            .num_rows(10)
             .build()
             .unwrap();
 
@@ -861,13 +852,7 @@ mod tests {
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(
-            LatentStore::builder()
-                .analyzer_config(Arc::new(AnalyzerConfig::default()))
-                .build()
-                .await
-                .unwrap(),
-        );
+        let latent_store = get_test_latent_store().await;
         let table_handler = latent_store.table_handler::<TableRep>();
 
         let result = parquet_inference

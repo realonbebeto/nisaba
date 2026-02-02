@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List
@@ -33,6 +34,8 @@ class DataSeeder:
         self.postgres_engine = create_engine(
             "postgresql+psycopg2://postgres:postgres@localhost:5432/postgres"
         )
+
+        os.makedirs("./assets/sqlite", exist_ok=True)
 
         self.sqlite_engine = create_engine("sqlite:///assets/sqlite/nisaba.sqlite")
 
@@ -174,7 +177,7 @@ class DataSeeder:
             destinations: List of destinations ('csv', 'excel', 'mongo', 'mysql', 'postgres', 'sqlite')
                          If None, writes to all destinations
         """
-        if destinations is None:
+        if len(destinations) == 0:
             destinations = ["csv", "excel", "mongo", "mysql", "postgres", "sqlite"]
 
         # Read once
@@ -223,7 +226,7 @@ class DataSeeder:
 
         return results
 
-    def seed_all_files(self, destinations: List[str] = [], max_workers: int = 3):
+    def seed_all_files(self, destinations: List[str] = [], max_workers: int = 4):
         """
         Process all files, each with parallel writes to destinations
 
@@ -258,7 +261,7 @@ def main():
     seeder = DataSeeder()
 
     try:
-        seeder.seed_all_files()
+        seeder.seed_all_files(max_workers=4)
 
     except Exception as e:
         raise Exception(str(e))

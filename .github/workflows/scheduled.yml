@@ -52,8 +52,8 @@ jobs:
         image: mongo:8
         env:
           MONGO_INITDB_DATABASE: mongo_store
-          MONGO_INITDB_ROOT_USERNAME: mongo
-          MONGO_INITDB_ROOT_PASSWORD: mongo
+          MONGO_INITDB_ROOT_USERNAME: mongodb
+          MONGO_INITDB_ROOT_PASSWORD: mongodb
         ports:
           - 27017:27017
         options: >-
@@ -70,13 +70,14 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Set up Python
-        run: uv python install 3.12.12
+        run: uv python install 3.12
 
-      - name: Install Requirements
-        run: uv pip install -r scripts/pyproject.toml
-
-      - name: Seeding Data Stores
-        run: python scripts/seed.py
+      - &seed
+        name: Setup Python Env & Seed
+        run: |
+          uv sync --directory=scripts
+          source scripts/.venv/bin/activate
+          python scripts/seed.py
 
       # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
       - name: Install protobuf compiler
@@ -107,13 +108,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Set up Python
-        run: uv python install 3.12.12
+        run: uv python install 3.12
 
-      - name: Install Requirements
-        run: uv pip install -r scripts/pyproject.toml
-
-      - name: Seeding Data Stores
-        run: python scripts/seed.py
+      - *seed
 
         # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
       - name: Install protobuf compiler

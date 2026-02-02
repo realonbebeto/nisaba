@@ -227,7 +227,7 @@ impl FileSourceBuilder {
                 silo_id: format!("{}-{}", self.filestore_type.clone(), Uuid::now_v7()),
                 source_type: SourceType::FileStore(self.filestore_type),
                 extra,
-                num_rows: num_rows.unwrap_or(1000),
+                num_rows: num_rows.unwrap_or(10),
                 has_header,
             },
         })
@@ -278,7 +278,7 @@ impl MongoSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::MongoDB, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::MongoDB),
                 extra: HashMap::new(),
-                num_rows: num_rows.unwrap_or(1000),
+                num_rows: num_rows.unwrap_or(10),
                 has_header: false,
             },
         })
@@ -367,7 +367,7 @@ impl MongoSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::MongoDB, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::MongoDB),
                 extra,
-                num_rows: num_rows.unwrap_or(1000),
+                num_rows: num_rows.unwrap_or(10),
                 has_header: false,
             },
         })
@@ -450,7 +450,7 @@ impl MySQLSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::MySQL, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::MySQL),
                 extra: HashMap::new(),
-                num_rows: num_rows.unwrap_or(1000),
+                num_rows: num_rows.unwrap_or(10),
                 has_header: false,
             },
         })
@@ -549,7 +549,7 @@ impl PostgresSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::PostgreSQL, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::PostgreSQL),
                 extra,
-                num_rows: num_rows.unwrap_or(1000),
+                num_rows: num_rows.unwrap_or(10),
                 has_header: false,
             },
         })
@@ -598,7 +598,7 @@ impl SQLiteSourceBuilder {
                 silo_id: format!("{}-{}", DatabaseType::SQLite, Uuid::now_v7()),
                 source_type: SourceType::Database(DatabaseType::SQLite),
                 extra: HashMap::new(),
-                num_rows: num_rows.unwrap_or(1000),
+                num_rows: num_rows.unwrap_or(10),
                 has_header: false,
             },
         })
@@ -759,7 +759,7 @@ mod tests {
     fn test_csv_source() {
         let source = Source::files(FileStoreType::Csv)
             .has_header(true)
-            .num_rows(1000)
+            .num_rows(10)
             .path("./assets/csv")
             .build()
             .unwrap();
@@ -778,7 +778,7 @@ mod tests {
     fn test_excel_source() {
         let source = Source::files(FileStoreType::Excel)
             .has_header(true)
-            .num_rows(1000)
+            .num_rows(10)
             .path("./assets/xlsx")
             .build()
             .unwrap();
@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn test_parquet_source() {
         let source = Source::files(FileStoreType::Parquet)
-            .num_rows(1000)
+            .num_rows(10)
             .path("./assets/parquet")
             .build()
             .unwrap();

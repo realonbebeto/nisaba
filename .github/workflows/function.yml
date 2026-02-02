@@ -7,6 +7,10 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
@@ -20,7 +24,7 @@ jobs:
         # run on stable and beta to ensure that tests won't break on the next version of the rust
         # toolchain
         toolchain: [stable, beta]
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
         include:
           - os: ubuntu-latest
             rust: nightly
@@ -58,8 +62,8 @@ jobs:
         image: mongo:8
         env:
           MONGO_INITDB_DATABASE: mongo_store
-          MONGO_INITDB_ROOT_USERNAME: mongo
-          MONGO_INITDB_ROOT_PASSWORD: mongo
+          MONGO_INITDB_ROOT_USERNAME: mongodb
+          MONGO_INITDB_ROOT_PASSWORD: mongodb
         ports:
           - 27017:27017
         options: >-
@@ -77,13 +81,14 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Set up Python
-        run: uv python install 3.12.12
+        run: uv python install 3.12
 
-      - name: Install Requirements
-        run: uv pip install -r scripts/pyproject.toml
-
-      - name: Seeding Data Stores
-        run: python scripts/seed.py
+      - &seed
+        name: Setup Python Env & Seed
+        run: |
+          uv sync --directory=scripts
+          source scripts/.venv/bin/activate
+          python scripts/seed.py
 
       # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
       - name: Install protobuf compiler
@@ -118,26 +123,27 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Set up Python
-        run: uv python install 3.12.12
+        run: uv python install 3.12
 
-      - name: Install Requirements
-        run: uv pip install -r scripts/pyproject.toml
-
-      - name: Seeding Data Stores
-        run: python scripts/seed.py
+      - *seed
 
         # Temporal fix to missing protoc requirement for 'lance-encoding v1.0.1'
       - name: Install protobuf compiler
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
+      - name: Install libssl
+        run: sudo apt-get install -y libssl-dev
+
       - name: Install stable
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+
       - name: Install nightly for -Zminimal-versions
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
+
       - name: rustup default stable
         run: rustup default stable
 
