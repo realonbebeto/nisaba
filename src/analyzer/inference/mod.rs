@@ -26,6 +26,7 @@ use arrow::{
     },
     error::ArrowError,
 };
+use sqlx::prelude::FromRow;
 use std::{
     collections::{HashMap, HashSet},
     str::FromStr,
@@ -218,6 +219,142 @@ pub struct SourceField {
     pub character_maximum_length: Option<i32>,
     /// user-defined data type
     pub udt_name: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+/// The `MySQLField` represents a field in a MySQL inference_schema.columns with various properties such as
+/// column name, data type, and constraints.
+pub struct MySQLField {
+    /// schema or namespace to which the table belongs in a database.
+    pub table_schema: Vec<u8>,
+    /// name of the table to which the field belongs
+    pub table_name: Vec<u8>,
+    /// name of a column in a database table
+    pub column_name: Vec<u8>,
+    /// default value of the column
+    pub column_default: Option<Vec<u8>>,
+    /// flag if the column is nullable or not
+    pub is_nullable: Vec<u8>,
+    /// data type of the column
+    pub data_type: Vec<u8>,
+    /// precision of a numeric data type
+    pub numeric_precision: Option<u32>,
+    /// scale of a numeric data type
+    pub numeric_scale: Option<u32>,
+    /// precision of a datetime data type
+    pub datetime_precision: Option<u32>,
+    /// maximum length of character of the field
+    pub character_maximum_length: Option<i64>,
+    /// user-defined data type
+    pub udt_name: Vec<u8>,
+}
+
+impl MySQLField {
+    pub fn with_silo_id(self, silo_id: &str) -> Result<SourceField, NisabaError> {
+        let column_default = match self.column_default {
+            Some(v) => Some(String::from_utf8(v)?),
+            None => None,
+        };
+        Ok(SourceField {
+            silo_id: silo_id.to_owned(),
+            table_schema: String::from_utf8(self.table_schema)?,
+            table_name: String::from_utf8(self.table_name)?,
+            column_name: String::from_utf8(self.column_name)?,
+            column_default,
+            is_nullable: String::from_utf8(self.is_nullable)?,
+            data_type: String::from_utf8(self.data_type)?,
+            numeric_precision: self.numeric_precision.map(|v| v as i32),
+            numeric_scale: self.numeric_scale.map(|v| v as i32),
+            datetime_precision: self.datetime_precision.map(|v| v as i32),
+            character_maximum_length: self.character_maximum_length.map(|v| v as i32),
+            udt_name: String::from_utf8(self.udt_name)?,
+        })
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+/// The `RawField` represents a field in a data source with various properties such as
+/// column name, data type, and constraints.
+pub struct PostgresField {
+    /// schema or namespace to which the table belongs in a database.
+    pub table_schema: String,
+    /// name of the table to which the field belongs
+    pub table_name: String,
+    /// name of a column in a database table
+    pub column_name: String,
+    /// default value of the column
+    pub column_default: Option<String>,
+    /// flag if the column is nullable or not
+    pub is_nullable: String,
+    /// data type of the column
+    pub data_type: String,
+    /// precision of a numeric data type
+    pub numeric_precision: Option<i32>,
+    /// scale of a numeric data type
+    pub numeric_scale: Option<i32>,
+    /// precision of a datetime data type
+    pub datetime_precision: Option<i32>,
+    /// maximum length of character of the field
+    pub character_maximum_length: Option<i32>,
+    /// user-defined data type
+    pub udt_name: String,
+}
+
+impl PostgresField {
+    pub fn with_silo_id(self, silo_id: &str) -> SourceField {
+        SourceField {
+            silo_id: silo_id.to_owned(),
+            table_schema: self.table_schema,
+            table_name: self.table_name,
+            column_name: self.column_name,
+            column_default: self.column_default,
+            is_nullable: self.is_nullable,
+            data_type: self.data_type,
+            numeric_precision: self.numeric_precision,
+            numeric_scale: self.numeric_scale,
+            datetime_precision: self.datetime_precision,
+            character_maximum_length: self.character_maximum_length,
+            udt_name: self.udt_name,
+        }
+    }
+}
+
+pub fn to_source_fields(silo_id: &str, rows: Vec<PostgresField>) -> Vec<SourceField> {
+    rows.into_iter()
+        .map(|rf| rf.with_silo_id(silo_id))
+        .collect()
+}
+
+#[derive(Debug, FromRow)]
+pub struct PragmaField {
+    name: String,
+    #[sqlx(rename = "type")]
+    data_type: String,
+    notnull: bool,
+    dflt_value: Option<String>,
+}
+
+impl PragmaField {
+    pub fn into_source_field(self, silo_id: &str, table_name: String) -> SourceField {
+        SourceField {
+            silo_id: silo_id.to_string(),
+            table_schema: String::from("default"),
+            table_name,
+            column_name: self.name,
+            column_default: self.dflt_value,
+            is_nullable: if self.notnull {
+                String::from("YES")
+            } else {
+                String::from("NO")
+            },
+            data_type: self.data_type.to_lowercase(),
+            numeric_precision: None,
+            numeric_scale: None,
+            datetime_precision: None,
+            character_maximum_length: None,
+            udt_name: self.data_type.to_lowercase(),
+        }
+    }
 }
 
 /// The function `convert_into_table_defs` converts a vector of source fields into table definitions and

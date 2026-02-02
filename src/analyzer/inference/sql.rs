@@ -24,7 +24,8 @@ use crate::{
     analyzer::{
         datastore::{Extra, Source},
         inference::{
-            SchemaInferenceEngine, SourceField, convert_into_table_defs, table_def_to_arrow_schema,
+            MySQLField, PostgresField, PragmaField, SchemaInferenceEngine, SourceField,
+            convert_into_table_defs, table_def_to_arrow_schema, to_source_fields,
         },
         probe::InferenceStats,
     },
@@ -454,7 +455,7 @@ async fn read_postgres_fields(
                         FROM information_schema.columns 
                         WHERE table_schema = $1";
 
-    let rows = sqlx::query(query)
+    let rows: Vec<PostgresField> = sqlx::query_as(query)
         .bind(
             source
                 .metadata
@@ -465,36 +466,7 @@ async fn read_postgres_fields(
         .fetch_all(pool)
         .await?;
 
-    let mut source_fields = Vec::new();
-
-    for row in rows {
-        let table_schema: String = row.get("table_schema");
-        let table_name: String = row.get("table_name");
-        let column_name: String = row.get("column_name");
-        let column_default: Option<String> = row.get("column_default");
-        let is_nullable: String = row.get("is_nullable");
-        let data_type: String = row.get("data_type");
-        let numeric_precision: Option<i32> = row.get("numeric_precision");
-        let numeric_scale: Option<i32> = row.get("numeric_scale");
-        let datetime_precision: Option<i32> = row.get("datetime_precision");
-        let character_maximum_length: Option<i32> = row.get("character_maximum_length");
-        let udt_name: String = row.get("udt_name");
-
-        source_fields.push(SourceField {
-            silo_id: source.metadata.silo_id.clone(),
-            table_schema,
-            table_name,
-            column_name,
-            column_default,
-            is_nullable,
-            data_type,
-            numeric_precision,
-            numeric_scale,
-            datetime_precision,
-            character_maximum_length,
-            udt_name,
-        });
-    }
+    let source_fields = to_source_fields(&source.metadata.silo_id, rows);
 
     Ok(source_fields)
 }
@@ -631,42 +603,11 @@ async fn read_mysql_fields(
                         FROM information_schema.COLUMNS
                         WHERE table_schema = DATABASE();";
 
-    let rows = sqlx::query(query).fetch_all(pool).await?;
+    let rows: Vec<MySQLField> = sqlx::query_as(query).fetch_all(pool).await?;
+    let source_fields: Result<Vec<SourceField>, NisabaError> =
+        rows.into_iter().map(|r| r.with_silo_id(silo_id)).collect();
 
-    let mut source_fields = Vec::new();
-
-    for row in rows {
-        let table_schema: String = row.get("table_schema");
-        let table_name: String = row.get("table_name");
-        let column_name: String = row.get("column_name");
-        let column_default: Option<String> = row.get("column_default");
-        let is_nullable: String = row.get("is_nullable");
-        let data_type: Vec<u8> = row.get("data_type");
-        let data_type = String::from_utf8(data_type)?;
-        let numeric_precision: Option<u32> = row.get("numeric_precision");
-        let numeric_scale: Option<u32> = row.get("numeric_scale");
-        let datetime_precision: Option<u32> = row.get("datetime_precision");
-        let character_maximum_length: Option<i64> = row.get("character_maximum_length");
-        let udt_name: Vec<u8> = row.get("udt_name");
-        let udt_name = String::from_utf8(udt_name)?;
-
-        source_fields.push(SourceField {
-            silo_id: silo_id.to_string(),
-            table_schema,
-            table_name,
-            column_name,
-            column_default,
-            is_nullable,
-            data_type,
-            numeric_precision: numeric_precision.map(|v| v as i32),
-            numeric_scale: numeric_scale.map(|v| v as i32),
-            datetime_precision: datetime_precision.map(|v| v as i32),
-            character_maximum_length: character_maximum_length.map(|v| v as i32),
-            udt_name,
-        });
-    }
-
-    Ok(source_fields)
+    source_fields
 }
 
 // ====================
@@ -730,43 +671,13 @@ async fn read_sqlite_fields(
     for table_name in table_names {
         let query = format!("PRAGMA table_info({})", table_name);
 
-        let rows = sqlx::query(&query).fetch_all(pool).await?;
-
-        let schemas: Result<Vec<SourceField>, std::string::FromUtf8Error> = rows
+        let rows: Vec<PragmaField> = sqlx::query_as(&query).fetch_all(pool).await?;
+        let s_fields: Vec<SourceField> = rows
             .into_iter()
-            .map(|r| {
-                let table_schema = String::from("default");
-
-                let column_name: String = r.get("name");
-
-                let column_default: Option<String> = r.get("dflt_value");
-
-                let is_nullable: bool = r.get("notnull");
-
-                let data_type: String = r.get("type");
-
-                Ok(SourceField {
-                    silo_id: silo_id.to_string(),
-                    table_schema,
-                    table_name: table_name.clone(),
-                    column_name,
-                    column_default,
-                    is_nullable: if is_nullable {
-                        String::from("NO")
-                    } else {
-                        String::from("YES")
-                    },
-                    data_type: data_type.to_lowercase(),
-                    numeric_precision: None,
-                    numeric_scale: None,
-                    datetime_precision: None,
-                    character_maximum_length: None,
-                    udt_name: data_type.to_lowercase(),
-                })
-            })
+            .map(|r| r.into_source_field(silo_id, table_name.clone()))
             .collect();
 
-        source_fields.extend(schemas?);
+        source_fields.extend(s_fields);
     }
 
     Ok(source_fields)
