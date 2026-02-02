@@ -54,6 +54,8 @@ pub mod test {
             .similarity(SimilarityConfig::default())
             .build();
 
+        let latent_store = get_test_latent_store().await;
+
         // analyzer
         let analyzer = SchemaAnalyzer::builder()
             .config(config)
@@ -73,7 +75,8 @@ pub mod test {
             ])
             .build()
             .await
-            .unwrap();
+            .unwrap()
+            .latent_store(latent_store);
 
         let result = analyzer.analyze().await.unwrap();
 

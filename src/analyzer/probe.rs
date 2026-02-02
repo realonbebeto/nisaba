@@ -148,6 +148,17 @@ impl SchemaAnalyzer {
     pub fn builder() -> SchemaAnalyzerBuilder {
         SchemaAnalyzerBuilder::default()
     }
+
+    /// The `latent_store` function sets a predefined latent store.
+    ///
+    /// Arguments:
+    ///
+    /// * `latent_store`: This parameter is a shared pre-defined latent shore.
+    ///
+    pub fn latent_store(mut self, latent_store: Arc<LatentStore>) -> Self {
+        self.context.persistence = latent_store;
+        self
+    }
     /// The `analyze` function runs agains the beforehand provided storage location as Sources, infers their
     /// schemas, clusters them based on similarities.
     ///
