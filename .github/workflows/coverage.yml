@@ -50,8 +50,8 @@ jobs:
         image: mongo:8
         env:
           MONGO_INITDB_DATABASE: mongo_store
-          MONGO_INITDB_ROOT_USERNAME: mongo
-          MONGO_INITDB_ROOT_PASSWORD: mongo
+          MONGO_INITDB_ROOT_USERNAME: mongodb
+          MONGO_INITDB_ROOT_PASSWORD: mongodb
         ports:
           - 27017:27017
         options: >-
@@ -83,7 +83,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
+        uses: taiki-e/install-action@cargo-tarpaulin
 
       - name: Cache cargo registry
         uses: actions/cache@v5.0.1
