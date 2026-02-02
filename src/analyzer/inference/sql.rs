@@ -1383,7 +1383,7 @@ where
 #[cfg(test)]
 mod tests {
 
-    use crate::{AnalyzerConfig, LatentStore, types::FieldDef};
+    use crate::{test::get_test_latent_store, types::FieldDef};
 
     use super::*;
 
@@ -1400,13 +1400,7 @@ mod tests {
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(
-            LatentStore::builder()
-                .analyzer_config(Arc::new(AnalyzerConfig::default()))
-                .build()
-                .await
-                .unwrap(),
-        );
+        let latent_store = get_test_latent_store().await;
 
         let table_handler = latent_store.table_handler::<TableRep>();
 
@@ -1443,13 +1437,7 @@ mod tests {
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(
-            LatentStore::builder()
-                .analyzer_config(Arc::new(AnalyzerConfig::default()))
-                .build()
-                .await
-                .unwrap(),
-        );
+        let latent_store = get_test_latent_store().await;
 
         let table_handler = latent_store.table_handler::<TableRep>();
 
@@ -1482,13 +1470,7 @@ mod tests {
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(
-            LatentStore::builder()
-                .analyzer_config(Arc::new(AnalyzerConfig::default()))
-                .build()
-                .await
-                .unwrap(),
-        );
+        let latent_store = get_test_latent_store().await;
 
         let table_handler = latent_store.table_handler::<TableRep>();
 

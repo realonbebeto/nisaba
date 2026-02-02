@@ -461,7 +461,7 @@ fn merge_types(type_a: &DataType, type_b: &DataType) -> DataType {
 #[cfg(test)]
 mod tests {
 
-    use crate::{AnalyzerConfig, LatentStore, analyzer::datastore::Source, types::FieldDef};
+    use crate::{analyzer::datastore::Source, test::get_test_latent_store, types::FieldDef};
 
     use super::*;
 
@@ -478,13 +478,7 @@ mod tests {
 
         let stats = Arc::new(Mutex::new(InferenceStats::default()));
 
-        let latent_store = Arc::new(
-            LatentStore::builder()
-                .analyzer_config(Arc::new(AnalyzerConfig::default()))
-                .build()
-                .await
-                .unwrap(),
-        );
+        let latent_store = get_test_latent_store().await;
 
         let table_handler = latent_store.table_handler::<TableRep>();
 
