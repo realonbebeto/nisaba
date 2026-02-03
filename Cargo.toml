@@ -23,6 +23,8 @@ categories = [
 ]
 readme = "README.md"
 
+exclude = ["assets/*"]
+
 [dependencies]
 anyhow = { version = "1.0.100" }
 arrow = { version = "56.2.0", features = ["csv"], default-features = false }
