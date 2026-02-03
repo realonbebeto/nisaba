@@ -21,6 +21,7 @@ categories = [
     "science",
     "data-structures",
 ]
+readme = "README.md"
 
 [dependencies]
 anyhow = { version = "1.0.100" }
