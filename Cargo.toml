@@ -16,11 +16,10 @@ keywords = [
 ]
 authors = ["Bebeto Nyamwamu. (realonbebeto) <realonbbt@gmail.com>"]
 categories = [
-    "data-processing",
-    "data-validation",
-    "schema-management",
-    "data-engineering",
-    "data",
+    "database",
+    "database-implementations",
+    "science",
+    "data-structures",
 ]
 
 [dependencies]
