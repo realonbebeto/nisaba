@@ -8,8 +8,10 @@ use arrow::{
 use futures::TryStreamExt;
 use mongodb::bson::{Bson, Document, doc};
 
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::Mutex;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     analyzer::{
@@ -113,7 +115,7 @@ impl NoSQLInferenceEngine {
                 let table_def = convert_into_table_defs(result)?;
 
                 {
-                    let mut stats = infer_stats.lock().await;
+                    let mut stats = infer_stats.lock().unwrap();
                     stats.tables_found += table_def.len();
                 }
 
@@ -147,7 +149,7 @@ impl NoSQLInferenceEngine {
         }
 
         {
-            let mut stats = infer_stats.lock().await;
+            let mut stats = infer_stats.lock().unwrap();
             stats.errors.extend(errors);
 
             stats.tables_inferred += table_reps.len();

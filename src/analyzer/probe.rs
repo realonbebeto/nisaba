@@ -1,7 +1,10 @@
 use fastembed::EmbeddingModel;
 use lancedb::DistanceType;
-use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
-use tokio::sync::Mutex;
+use std::{
+    collections::HashSet,
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+};
 use uuid::Uuid;
 
 use crate::{
@@ -360,28 +363,32 @@ impl SchemaAnalyzer {
             let reps = match source.metadata.source_type {
                 SourceType::FileStore(FileStoreType::Csv) => {
                     let csv_inferer = CsvInferenceEngine::new();
-                    csv_inferer.csv_store_infer(
-                        source,
-                        self.context.stats.clone(),
-                        self.context.threads,
-                        |table_defs| async {
-                            table_handler.store_tables(table_defs).await?;
-                            Ok(())
-                        },
-                    )
+                    csv_inferer
+                        .csv_store_infer(
+                            source,
+                            self.context.stats.clone(),
+                            self.context.threads,
+                            |table_defs| async {
+                                table_handler.store_tables(table_defs).await?;
+                                Ok(())
+                            },
+                        )
+                        .await
                 }
 
                 SourceType::FileStore(FileStoreType::Excel) => {
                     let excel_inferer = ExcelInferenceEngine::new();
-                    excel_inferer.excel_store_infer(
-                        source,
-                        self.context.stats.clone(),
-                        self.context.threads,
-                        |table_defs| async {
-                            table_handler.store_tables(table_defs).await?;
-                            Ok(())
-                        },
-                    )
+                    excel_inferer
+                        .excel_store_infer(
+                            source,
+                            self.context.stats.clone(),
+                            self.context.threads,
+                            |table_defs| async {
+                                table_handler.store_tables(table_defs).await?;
+                                Ok(())
+                            },
+                        )
+                        .await
                 }
 
                 SourceType::Database(DatabaseType::MongoDB) => {
@@ -412,15 +419,17 @@ impl SchemaAnalyzer {
                 SourceType::FileStore(FileStoreType::Parquet) => {
                     let parquet_inferer = ParquetInferenceEngine::new();
 
-                    parquet_inferer.parquet_store_infer(
-                        source,
-                        self.context.stats.clone(),
-                        4,
-                        |table_defs| async {
-                            table_handler.store_tables(table_defs).await?;
-                            Ok(())
-                        },
-                    )
+                    parquet_inferer
+                        .parquet_store_infer(
+                            source,
+                            self.context.stats.clone(),
+                            4,
+                            |table_defs| async {
+                                table_handler.store_tables(table_defs).await?;
+                                Ok(())
+                            },
+                        )
+                        .await
                 }
 
                 SourceType::Database(DatabaseType::PostgreSQL) => {
