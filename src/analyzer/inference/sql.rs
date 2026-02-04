@@ -17,8 +17,7 @@ use arrow::{
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use futures::{StreamExt, stream};
 use sqlx::{MySqlPool, PgPool, Row, SqlitePool};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::{
     analyzer::{
@@ -135,7 +134,7 @@ impl MySQLInferenceEngine {
         }
 
         {
-            let mut stats = infer_stats.lock().await;
+            let mut stats = infer_stats.lock().unwrap();
             stats.errors.extend(errors);
 
             stats.tables_inferred += table_reps.len();
@@ -248,7 +247,7 @@ impl PostgreSQLInferenceEngine {
         }
 
         {
-            let mut stats = infer_stats.lock().await;
+            let mut stats = infer_stats.lock().unwrap();
             stats.errors.extend(errors);
 
             stats.tables_inferred += table_reps.len();
@@ -362,7 +361,7 @@ impl SqliteInferenceEngine {
         }
 
         {
-            let mut stats = infer_stats.lock().await;
+            let mut stats = infer_stats.lock().unwrap();
             stats.errors.extend(errors);
 
             stats.tables_inferred += table_reps.len();

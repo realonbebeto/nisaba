@@ -13,9 +13,8 @@ use std::{
     fs::{self, File},
     io::Seek,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
-use tokio::sync::Mutex;
 
 use crate::{
     analyzer::{
@@ -44,12 +43,12 @@ impl CsvInferenceEngine {
         Self
     }
 
-    pub fn csv_store_infer<F, Fut>(
+    pub async fn csv_store_infer<F, Fut>(
         &self,
         source: &Source,
         infer_stats: Arc<Mutex<InferenceStats>>,
         workers: usize,
-        on_table: F,
+        on_tables: F,
     ) -> Result<Vec<TableRep>, NisabaError>
     where
         F: Fn(Vec<TableDef>) -> Fut + Sync,
@@ -66,49 +65,50 @@ impl CsvInferenceEngine {
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("csv"))
             .collect();
 
-        let table_reps = Mutex::new(Vec::new());
-
-        rayon::ThreadPoolBuilder::new()
+        let result_defs: Vec<_> = rayon::ThreadPoolBuilder::new()
             .num_threads(workers)
             .build()?
             .install(|| {
-                csv_paths.par_iter().for_each(|path| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    {
-                        let mut stats = rt.block_on(infer_stats.lock());
-                        stats.tables_found += 1;
-                    }
-
-                    match self.infer_single_csv(path, source) {
-                        Ok(table_def) => {
-                            {
-                                let mut stats = rt.block_on(infer_stats.lock());
-                                stats.tables_inferred += 1;
-                                stats.fields_inferred += table_def.fields.len();
-                            }
-
-                            {
-                                let mut table_reps = rt.block_on(table_reps.lock());
-                                table_reps.push((&table_def).into());
-                            }
-
-                            if let Err(e) = rt.block_on(on_table(vec![table_def])) {
-                                let mut stats = rt.block_on(infer_stats.lock());
-                                stats.errors.push(e.to_string());
-                            }
+                csv_paths
+                    .par_iter()
+                    .map(|path| {
+                        {
+                            let mut stats = infer_stats.lock().unwrap();
+                            stats.tables_found += 1;
                         }
-                        Err(e) => {
-                            let mut stats = rt.block_on(infer_stats.lock());
-                            stats.errors.push(e.to_string());
-                        }
-                    }
-                })
+
+                        self.infer_single_csv(path, source)
+                    })
+                    .collect()
             });
 
-        Ok(table_reps.into_inner())
+        futures::future::try_join_all(result_defs.into_iter().map(|rslt| async {
+            match rslt {
+                Ok(table_def) => {
+                    let table_rep: TableRep = (&table_def).into();
+
+                    if let Err(e) = on_tables(vec![table_def]).await {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.errors.push(e.to_string());
+                    } else {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.fields_inferred += table_rep.fields.len();
+                        stats.tables_inferred += 1;
+                    }
+
+                    Ok(table_rep)
+                }
+
+                Err(e) => {
+                    {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.errors.push(e.to_string());
+                    }
+                    Err(e)
+                }
+            }
+        }))
+        .await
     }
 
     fn infer_single_csv(&self, path: &PathBuf, source: &Source) -> Result<TableDef, NisabaError> {
@@ -197,7 +197,7 @@ impl ExcelInferenceEngine {
         Self
     }
 
-    pub fn excel_store_infer<F, Fut>(
+    pub async fn excel_store_infer<F, Fut>(
         &self,
         source: &Source,
         infer_stats: Arc<Mutex<InferenceStats>>,
@@ -212,6 +212,7 @@ impl ExcelInferenceEngine {
             .client
             .as_path()
             .ok_or(NisabaError::Missing("No excel directory provided".into()))?;
+
         // Collect Excel paths first
         let excel_paths: Vec<_> = fs::read_dir(dir_str)?
             .filter_map(|e| e.ok())
@@ -226,58 +227,52 @@ impl ExcelInferenceEngine {
             })
             .collect();
 
-        let table_reps = Mutex::new(Vec::new());
-
-        rayon::ThreadPoolBuilder::new()
+        let result_defs: Vec<_> = rayon::ThreadPoolBuilder::new()
             .num_threads(workers)
             .build()?
             .install(|| {
-                excel_paths.par_iter().for_each(|path| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-
-                    {
-                        let mut stats = rt.block_on(infer_stats.lock());
-                        stats.tables_found += 1;
-                    }
-
-                    match self.infer_single_excel(path, source) {
-                        Ok(table_defs) => {
-                            let tables_count = table_defs.len();
-                            let fields_count: usize =
-                                table_defs.iter().map(|f| f.fields.len()).sum();
-
-                            {
-                                let mut stats = rt.block_on(infer_stats.lock());
-                                stats.tables_inferred += tables_count;
-                                stats.fields_inferred += fields_count;
-                            }
-
-                            {
-                                let mut table_reps = rt.block_on(table_reps.lock());
-                                table_reps.extend(table_defs.iter().map(|td| {
-                                    let tr: TableRep = td.into();
-                                    tr
-                                }));
-                            }
-
-                            if let Err(e) = rt.block_on(on_tables(table_defs)) {
-                                let mut stats = rt.block_on(infer_stats.lock());
-                                stats.errors.push(e.to_string());
-                            }
+                excel_paths
+                    .par_iter()
+                    .map(|path| {
+                        {
+                            let mut stats = infer_stats.lock().unwrap();
+                            stats.tables_found += 1;
                         }
 
-                        Err(e) => {
-                            let mut stats = rt.block_on(infer_stats.lock());
-                            stats.errors.push(e.to_string());
-                        }
-                    }
-                })
+                        self.infer_single_excel(path, source)
+                    })
+                    .collect()
             });
 
-        Ok(table_reps.into_inner())
+        futures::future::try_join_all(result_defs.into_iter().map(|rslt| async {
+            match rslt {
+                Ok(table_defs) => {
+                    let table_reps: Vec<TableRep> = table_defs.iter().map(|td| td.into()).collect();
+
+                    if let Err(e) = on_tables(table_defs).await {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.errors.push(e.to_string());
+                    } else {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.fields_inferred +=
+                            table_reps.iter().map(|tr| tr.fields.len()).sum::<usize>();
+                        stats.tables_inferred += table_reps.len();
+                    }
+
+                    Ok(table_reps)
+                }
+
+                Err(e) => {
+                    {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.errors.push(e.to_string());
+                    }
+                    Err(e)
+                }
+            }
+        }))
+        .await
+        .map(|v| v.concat())
     }
 
     fn infer_single_excel(
@@ -364,7 +359,7 @@ impl ParquetInferenceEngine {
         Self
     }
 
-    pub fn parquet_store_infer<F, Fut>(
+    pub async fn parquet_store_infer<F, Fut>(
         &self,
         source: &Source,
         infer_stats: Arc<Mutex<InferenceStats>>,
@@ -387,46 +382,50 @@ impl ParquetInferenceEngine {
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("parquet"))
             .collect();
 
-        let table_reps = Mutex::new(Vec::new());
-
-        rayon::ThreadPoolBuilder::new()
+        let result_defs: Vec<_> = rayon::ThreadPoolBuilder::new()
             .num_threads(workers)
             .build()?
             .install(|| {
-                parquet_paths.par_iter().for_each(|path| {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    {
-                        let mut stats = rt.block_on(infer_stats.lock());
-                        stats.tables_found += 1;
-                    }
-
-                    match self.infer_single_parquet(path, source) {
-                        Ok(table_def) => {
-                            {
-                                let mut stats = rt.block_on(infer_stats.lock());
-                                stats.tables_inferred += 1;
-                                stats.fields_inferred += 1;
-                                let mut table_reps = rt.block_on(table_reps.lock());
-                                table_reps.push((&table_def).into());
-                            }
-
-                            if let Err(e) = rt.block_on(on_tables(vec![table_def])) {
-                                let mut stats = rt.block_on(infer_stats.lock());
-                                stats.errors.push(e.to_string());
-                            }
+                parquet_paths
+                    .par_iter()
+                    .map(|path| {
+                        {
+                            let mut stats = infer_stats.lock().unwrap();
+                            stats.tables_found += 1;
                         }
-                        Err(e) => {
-                            let mut stats = rt.block_on(infer_stats.lock());
-                            stats.errors.push(e.to_string());
-                        }
-                    }
-                })
+
+                        self.infer_single_parquet(path, source)
+                    })
+                    .collect()
             });
 
-        Ok(table_reps.into_inner())
+        futures::future::try_join_all(result_defs.into_iter().map(|rslt| async {
+            match rslt {
+                Ok(table_def) => {
+                    let table_rep: TableRep = (&table_def).into();
+
+                    if let Err(e) = on_tables(vec![table_def]).await {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.errors.push(e.to_string());
+                    } else {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.fields_inferred += table_rep.fields.len();
+                        stats.tables_inferred += 1;
+                    }
+
+                    Ok(table_rep)
+                }
+
+                Err(e) => {
+                    {
+                        let mut stats = infer_stats.lock().unwrap();
+                        stats.errors.push(e.to_string());
+                    }
+                    Err(e)
+                }
+            }
+        }))
+        .await
     }
 
     fn infer_single_parquet(
@@ -809,6 +808,7 @@ mod tests {
                 table_handler.store_tables(table_defs).await?;
                 Ok(())
             })
+            .await
             .unwrap();
 
         assert_eq!(result.len(), 9);
@@ -835,6 +835,7 @@ mod tests {
                 table_handler.store_tables(table_defs).await?;
                 Ok(())
             })
+            .await
             .unwrap();
 
         assert_eq!(result.len(), 9);
@@ -860,6 +861,7 @@ mod tests {
                 table_handler.store_tables(table_defs).await?;
                 Ok(())
             })
+            .await
             .unwrap();
 
         assert_eq!(result.len(), 9);
