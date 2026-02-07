@@ -10,9 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - Fix/blocking async ([#10](https://github.com/realonbebeto/nisaba/pull/10))
-- tarpaulin 10min timeout
-- openssl minimal option dep
 
-## [0.2.0]
+## [0.2.0] - 2026-02-03
 
 Initial public release.

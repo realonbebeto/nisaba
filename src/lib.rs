@@ -80,6 +80,6 @@ pub mod test {
 
         let result = analyzer.analyze().await.unwrap();
 
-        assert!(result.is_some());
+        assert!(result.tables.is_some());
     }
 }

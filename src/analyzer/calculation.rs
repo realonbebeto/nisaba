@@ -7,6 +7,7 @@ use graphrs::{
 use nalgebra::{DMatrix, DVector, SVector};
 use rand::{SeedableRng, rngs::StdRng};
 use rand_distr::{Distribution, Normal};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use uuid::Uuid;
 
 use crate::{AnalyzerConfig, error::NisabaError};
@@ -123,6 +124,44 @@ impl GraphClusterer {
 
         Ok(clusters)
     }
+
+    pub fn cluster_confidence(&self) -> Result<Vec<(HashSet<Uuid>, f32)>, NisabaError> {
+        let clusters = self.clusters()?;
+
+        let communities: Result<Vec<(HashSet<Uuid>, f32)>, NisabaError> = clusters
+            .into_par_iter()
+            .map(|cluster| {
+                let values = cluster.iter().collect::<Vec<&Uuid>>();
+
+                let pairs: Vec<(&Uuid, &Uuid)> = values
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, a)| values.iter().skip(i + 1).map(move |b| (*a, *b)))
+                    .collect();
+
+                let mut num_edges = 0;
+
+                let confs: Result<Vec<f32>, NisabaError> = pairs
+                    .iter()
+                    .map(|nodes| match self.graph.get_edge(*nodes.0, *nodes.1) {
+                        Ok(edge) => {
+                            num_edges += 1;
+                            Ok(edge.weight as f32)
+                        }
+                        // Edge case to handle a community not inter-connected
+                        Err(e) if matches!(e.kind, graphrs::ErrorKind::EdgeNotFound) => Ok(0.0),
+                        Err(e) => return Err(NisabaError::Graph(e)),
+                    })
+                    .collect();
+
+                let conf = confs?.iter().sum::<f32>() / num_edges as f32;
+
+                Ok((cluster, conf))
+            })
+            .collect();
+
+        communities
+    }
 }
 
 #[cfg(test)]
@@ -153,7 +192,7 @@ mod tests {
         let targets = [
             all_ids[1], all_ids[2], all_ids[5], all_ids[4], all_ids[5], all_ids[1],
         ];
-        let weights = [0.02_f32, 0.1, 0.1, 0.7, 0.3, 0.4, 0.8];
+        let weights = [0.02_f32, 0.1, 0.1, 0.7, 0.3, 0.4];
 
         let config = Arc::new(AnalyzerConfig::default());
 
@@ -187,9 +226,7 @@ mod tests {
     fn test_graph_clustering() {
         let graph = create_test_graph();
 
-        let result = graph.clusters().unwrap();
-
-        dbg!(&result);
+        let result = graph.cluster_confidence().unwrap();
 
         assert!(!result.is_empty());
     }
