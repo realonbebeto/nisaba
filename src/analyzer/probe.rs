@@ -485,6 +485,11 @@ impl SchemaAnalyzer {
             table_reps.extend(reps?);
         }
 
+        {
+            let mut stats = self.context.stats.lock().unwrap();
+            stats.sources_analyzed += 1;
+        }
+
         table_handler.create_index().await?;
 
         field_handler.create_index().await?;
