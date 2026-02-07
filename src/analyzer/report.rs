@@ -1,6 +1,15 @@
 use uuid::Uuid;
 
-use crate::types::{FieldDef, TableRep};
+use crate::{
+    analyzer::probe::InferenceStats,
+    types::{FieldDef, TableRep},
+};
+
+#[derive(Debug, Clone)]
+pub struct ReconcileReport {
+    pub stats: InferenceStats,
+    pub tables: Option<Vec<TableCluster>>,
+}
 
 #[derive(Debug, Clone)]
 /// The `TableCluster` represents the result of a clustering process
@@ -11,6 +20,8 @@ pub struct TableCluster {
     pub tables: Vec<TableResult>,
     /// member field results.
     pub field_clusters: Vec<FieldCluster>,
+    /// similarity confidence of the cluste
+    pub confidence: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +31,8 @@ pub struct FieldCluster {
     pub cluster_id: u32,
     /// member field results
     pub fields: Vec<FieldResult>,
+    /// similarity confidence of the cluster
+    pub confidence: f32,
 }
 
 #[derive(Debug, Clone)]

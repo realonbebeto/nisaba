@@ -13,7 +13,10 @@ use crate::{
     analyzer::{
         calculation::GraphClusterer,
         datastore::{DatabaseType, FileStoreType, Source, SourceType},
-        report::{FieldCluster, FieldMatch, FieldResult, TableCluster, TableMatch, TableResult},
+        report::{
+            FieldCluster, FieldMatch, FieldResult, ReconcileReport, TableCluster, TableMatch,
+            TableResult,
+        },
         retriever::{LatentStore, Storable},
     },
     error::NisabaError,
@@ -171,7 +174,7 @@ impl SchemaAnalyzer {
     /// `TableCluster` objects or a `NisabaError`. If the clustering process is successful and at least
     /// one cluster is formed, it returns `Ok(Some(clusters))` with the clustered tables. If no clusters
     /// are formed, it returns `Ok(None)`.
-    pub async fn analyze(&self) -> Result<Option<Vec<TableCluster>>, NisabaError> {
+    pub async fn analyze(&self) -> Result<ReconcileReport, NisabaError> {
         let table_reps = self.discover_ecosystem().await?;
 
         let total_tables = table_reps.len();
@@ -190,32 +193,45 @@ impl SchemaAnalyzer {
             clusterer.add_ann_edges(self.context.config.clone(), tbl_rep.id, &ids)?;
         }
 
-        let clusters = clusterer.clusters()?;
+        let clusters = clusterer.cluster_confidence()?;
 
         let mut clusters = self.cluster_tables(clusters, table_reps.clone())?;
+
+        let stats = {
+            let lockd = self.context.stats.lock().unwrap();
+            let stats = lockd.clone();
+            stats
+        };
+
+        let mut rreport = ReconcileReport {
+            stats,
+            tables: None,
+        };
 
         // Successful clustering
         if clusters.len() < total_tables {
             // Match Field Names Inside matched Collection/Tables
             self.cluster_fields(&mut clusters, &table_reps).await?;
 
-            return Ok(Some(clusters));
+            rreport.tables = Some(clusters);
+
+            return Ok(rreport);
         }
 
         // TODO: Optional CleanUp - Delete the lancedb
 
-        Ok(None)
+        Ok(rreport)
     }
 
     fn cluster_tables(
         &self,
-        clusters: Vec<HashSet<Uuid>>,
+        clusters: Vec<(HashSet<Uuid>, f32)>,
         table_reps: Vec<TableRep>,
     ) -> Result<Vec<TableCluster>, NisabaError> {
         let communities: Vec<TableCluster> = clusters
             .into_iter()
             .enumerate()
-            .map(|(cluster_id, vals)| {
+            .map(|(cluster_id, (vals, confidence))| {
                 let items = table_reps
                     .iter()
                     .filter(|d| vals.contains(&d.id))
@@ -235,6 +251,7 @@ impl SchemaAnalyzer {
                     cluster_id: cluster_id as u32,
                     tables,
                     field_clusters: Vec::new(),
+                    confidence,
                 }
             })
             .collect();
@@ -265,6 +282,7 @@ impl SchemaAnalyzer {
     ) -> Result<(), NisabaError> {
         for tbl_cluster in clusters {
             let mut cached_candidates = HashSet::new();
+
             let table_ids: Vec<Uuid> = tbl_cluster.tables.iter().map(|v| v.id).collect();
 
             let field_defs = table_reps
@@ -290,12 +308,12 @@ impl SchemaAnalyzer {
                 cached_candidates.extend(candidates.into_iter().map(|c| c.schema));
             }
 
-            let clusters = clusterer.clusters()?;
+            let clusters = clusterer.cluster_confidence()?;
 
             let communities: Vec<FieldCluster> = clusters
                 .into_iter()
                 .enumerate()
-                .map(|(cluster_id, vals)| {
+                .map(|(cluster_id, (vals, confidence))| {
                     let items = cached_candidates
                         .iter()
                         .filter(|d| vals.contains(&d.id))
@@ -314,6 +332,7 @@ impl SchemaAnalyzer {
                     FieldCluster {
                         cluster_id: cluster_id as u32,
                         fields,
+                        confidence,
                     }
                 })
                 .collect();
@@ -474,7 +493,7 @@ impl SchemaAnalyzer {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct InferenceStats {
     pub sources_analyzed: usize,
     pub tables_found: usize,
