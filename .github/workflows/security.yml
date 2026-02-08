@@ -4,6 +4,7 @@ on:
   schedule:
     # Run security audit once a week at 00:00 UTC Sundays
     - cron: "0 0 * * 0"
+
   push:
     branches: [main]
     paths:
