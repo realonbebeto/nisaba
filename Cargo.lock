@@ -1295,7 +1295,7 @@ dependencies = [
  "log",
  "object_store",
  "parking_lot",
- "parquet",
+ "parquet 56.2.0",
  "rand 0.9.2",
  "regex",
  "sqlparser",
@@ -1373,7 +1373,7 @@ dependencies = [
  "libc",
  "log",
  "object_store",
- "parquet",
+ "parquet 56.2.0",
  "paste",
  "recursive",
  "sqlparser",
@@ -1419,7 +1419,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "object_store",
- "parquet",
+ "parquet 56.2.0",
  "rand 0.9.2",
  "tempfile",
  "tokio",
@@ -1507,7 +1507,7 @@ dependencies = [
  "log",
  "object_store",
  "parking_lot",
- "parquet",
+ "parquet 56.2.0",
  "rand 0.9.2",
  "tokio",
 ]
@@ -4830,7 +4830,7 @@ dependencies = [
  "mongodb",
  "nalgebra",
  "openssl",
- "parquet",
+ "parquet 57.3.0",
  "rand 0.9.2",
  "rand_distr 0.5.1",
  "rayon",
@@ -5268,6 +5268,26 @@ dependencies = [
  "tokio",
  "twox-hash",
  "zstd",
+]
+
+[[package]]
+name = "parquet"
+version = "57.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ee96b29972a257b855ff2341b37e61af5f12d6af1158b6dcdb5b31ea07bb3cb"
+dependencies = [
+ "ahash",
+ "bytes",
+ "chrono",
+ "half",
+ "hashbrown 0.16.1",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "paste",
+ "seq-macro",
+ "thrift",
+ "twox-hash",
 ]
 
 [[package]]
