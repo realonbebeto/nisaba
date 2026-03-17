@@ -644,7 +644,7 @@ impl TypeLatticeResolver {
         }
 
         // Step 5: Dominant band check using array
-        let mut max_heap: BinaryHeap<usize> = band_counts.iter().map(|v| *v).collect();
+        let mut max_heap: BinaryHeap<usize> = band_counts.iter().copied().collect();
         let max_count = [max_heap.pop(), max_heap.pop()]
             .iter()
             .flatten()
@@ -771,12 +771,12 @@ impl TypeLatticeResolver {
                 //
                 // We only vote Against if intrinsic resolution
                 // is strictly coarser than the declared unit.
-                if let Some(delta_gcd) = stats.delta_gcd {
-                    if delta_gcd > scale {
-                        // Data does not vary at declared resolution.
-                        // e.g. declared nanoseconds but intrinsic resolution is milliseconds.
-                        return Ok(Vote::Against);
-                    }
+                if let Some(delta_gcd) = stats.delta_gcd
+                    && delta_gcd > scale
+                {
+                    // Data does not vary at declared resolution.
+                    // e.g. declared nanoseconds but intrinsic resolution is milliseconds.
+                    return Ok(Vote::Against);
                 }
 
                 Ok(Vote::For)

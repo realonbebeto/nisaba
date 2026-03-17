@@ -340,7 +340,7 @@ impl FieldStats {
             return Ok(());
         }
 
-        values.sort_unstable_by(|a, b| a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal));
+        values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         stats.delta_gcd = Self::compute_delta_gcd(&values);
 
@@ -408,7 +408,7 @@ impl FieldStats {
         stats.avg = total as f64 / stats.sample_size as f64;
 
         // Temper the entropy with distinct ratio
-        stats.entropy = Self::normalized_float_entropy(values.iter().map(|v| *v))
+        stats.entropy = Self::normalized_float_entropy(values.iter().copied())
             * (distinct_set.len() as f32 / stats.sample_size as f32);
 
         stats.kurtosis = kurtosis(&values, stats.sample_size, stats.avg);
@@ -519,13 +519,11 @@ impl FieldStats {
         });
 
         // Boolean check
-        let all_utf8_bools = values
-            .iter()
-            .all(|s| BOOLEAN_FMTS.iter().any(|fmt| *fmt == *s));
+        let all_utf8_bools = values.iter().all(|s| BOOLEAN_FMTS.contains(s));
 
         // Length statistics
         let mut lengths = values.iter().map(|v| v.len() as f64).collect::<Vec<f64>>();
-        lengths.sort_unstable_by(|a, b| a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal));
+        lengths.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         if stats.sample_size > 20 {
             stats.quantiles_f64 = Some(Self::compute_quantiles(&lengths, 11))
@@ -547,7 +545,7 @@ impl FieldStats {
         stats.distinct_count = distinct_set.len();
         stats.character_max_length = Some(max_len as i32);
         stats.character_min_length = Some(min_len as i32);
-        stats.avg = total_len as f64 / stats.sample_size as f64;
+        stats.avg = total_len / stats.sample_size as f64;
         stats.all_uuid = Some(all_uuid);
         stats.all_array = Some(all_array);
         stats.all_utf8_bools = Some(all_utf8_bools);
@@ -783,7 +781,7 @@ impl FieldStats {
             }
         };
 
-        if lengths.len() == 0 {
+        if lengths.is_empty() {
             return Ok(());
         }
 
@@ -1333,8 +1331,7 @@ pub fn detect_monotonicity(samples: &dyn Array) -> Result<bool, NisabaError> {
                 .map(|i| samples.value(i))
                 .collect();
 
-            values
-                .sort_unstable_by(|a, b| a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Greater));
+            values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Greater));
 
             Ok(values.windows(2).all(|w| w[1] >= w[0]))
         }

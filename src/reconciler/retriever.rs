@@ -553,7 +553,7 @@ fn table_from_record_batches(
             let ratio = num_fields as f32 / source.fields.len() as f32;
 
             // TODO: SizeCompatibilityConfig struct
-            if ratio >= 0.7 && ratio <= 1.3 {
+            if (0.7..=1.3).contains(&ratio) {
                 tmp_match.push(TableMatch { schema, confidence });
             }
         }
@@ -852,7 +852,7 @@ fn fields_from_record_batches(
             } else {
                 candidate_fields
                     .entry(table_id)
-                    .or_insert(Vec::new())
+                    .or_default()
                     .push(FieldMatch {
                         schema,
                         embedding: DVector::from_vec(embedding),
