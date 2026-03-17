@@ -108,7 +108,7 @@ jobs:
         run: cargo generate-lockfile
 
       - name: cargo test --locked
-        run: cargo test --locked --all-features --verbose
+        run: cargo test --locked --all-features --verbose -- --test-threads=1
 
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
@@ -154,4 +154,4 @@ jobs:
         run: cargo +nightly update -Zminimal-versions
 
       - name: cargo test
-        run: cargo test --locked --all-features --verbose
+        run: cargo test --locked --all-features --verbose -- --test-threads=1
