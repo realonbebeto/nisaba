@@ -1,9 +1,9 @@
 use arrow::{
     array::{
         ArrayBuilder, ArrayRef, ArrowPrimitiveType, BinaryBuilder, BooleanBuilder, Date32Builder,
-        Date64Builder, Decimal128Builder, FixedSizeBinaryBuilder, FixedSizeListBuilder,
-        Float16Builder, Float32Builder, Float64Builder, Int8Builder, Int16Builder, Int32Builder,
-        Int64Builder, PrimitiveBuilder, RecordBatch, StringBuilder, Time32MillisecondBuilder,
+        Decimal128Builder, FixedSizeBinaryBuilder, FixedSizeListBuilder, Float16Builder,
+        Float32Builder, Float64Builder, Int8Builder, Int16Builder, Int32Builder, Int64Builder,
+        PrimitiveBuilder, RecordBatch, StringBuilder, Time32MillisecondBuilder,
         Time64MicrosecondBuilder, TimestampMicrosecondBuilder, TimestampMillisecondBuilder,
         TimestampNanosecondBuilder, TimestampSecondBuilder,
     },
@@ -20,15 +20,15 @@ use sqlx::{MySqlPool, PgPool, Row, SqlitePool};
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    analyzer::{
+    error::NisabaError,
+    reconciler::{
+        InferenceStats,
         datastore::{Extra, Source},
         inference::{
             MySQLField, PostgresField, PragmaField, SchemaInferenceEngine, SourceField,
             convert_into_table_defs, table_def_to_arrow_schema, to_source_fields,
         },
-        probe::InferenceStats,
     },
-    error::NisabaError,
     types::{TableDef, TableRep},
 };
 // =================================================
@@ -507,13 +507,13 @@ where
             let field_details = table_def
                 .fields
                 .iter()
-                .find(|f| f.name == *field.name())
+                .find(|f| f.field_def.name == *field.name())
                 .unwrap();
 
             create_array_builder(
                 field.data_type(),
                 rows.len(),
-                field_details.char_max_length.map(|v| v as usize),
+                field_details.field_def.char_max_length.map(|v| v as usize),
             )
         })
         .collect();
@@ -701,7 +701,6 @@ fn create_array_builder(
         }
         DataType::Boolean => Box::new(BooleanBuilder::with_capacity(capacity)),
         DataType::Date32 => Box::new(Date32Builder::with_capacity(capacity)),
-        DataType::Date64 => Box::new(Date64Builder::with_capacity(capacity)),
         DataType::Decimal128(_, _) => Box::new(Decimal128Builder::with_capacity(capacity)),
         DataType::FixedSizeBinary(p) => {
             Box::new(FixedSizeBinaryBuilder::with_capacity(capacity, *p))
@@ -1403,7 +1402,7 @@ mod tests {
         let sql_inference = MySQLInferenceEngine::new();
 
         let result = sql_inference
-            .mysql_store_infer(&source, stats, |table_defs| async {
+            .mysql_store_infer(&source, stats.clone(), |table_defs| async {
                 table_handler.store_tables(table_defs).await?;
                 Ok(())
             })

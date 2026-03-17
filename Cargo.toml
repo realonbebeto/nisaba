@@ -35,7 +35,6 @@ chrono = { version = "0.4.42", default-features = false }
 dirs = { version = "6.0.0" }
 fastembed = { version = "5.8.1" }
 futures = { version = "0.3.31" }
-graphrs = { version = "0.11.16" }
 lancedb = { version = "0.23.0", default-features = false }
 mongodb = { version = "3.4.1", features = ["sync"] }
 nalgebra = "0.34.1"

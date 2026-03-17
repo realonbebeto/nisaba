@@ -41,8 +41,6 @@ pub enum NisabaError {
     Other(#[from] anyhow::Error),
     #[error(transparent)]
     Utf8(#[from] std::string::FromUtf8Error),
-    #[error("error: {0}")]
-    Graph(graphrs::Error),
     #[error(transparent)]
     ThreadPoolBuilder(#[from] rayon::ThreadPoolBuildError),
 }
