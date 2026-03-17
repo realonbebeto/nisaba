@@ -1,20 +1,19 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 
-mod analyzer;
 mod error;
+mod reconciler;
 
 mod types;
 
-pub use analyzer::{
-    AnalyzerConfig, SchemaAnalyzer,
+pub use reconciler::{
+    AnalyzerConfig, SchemaAnalyzer, SchemaAnalyzerBuilder, ScoringConfig, SimilarityConfig,
     datastore::{FileStoreType, Source},
     inference::{
         CsvInferenceEngine, ExcelInferenceEngine, MySQLInferenceEngine, NoSQLInferenceEngine,
         ParquetInferenceEngine, PostgreSQLInferenceEngine, SchemaInferenceEngine,
         SqliteInferenceEngine,
     },
-    probe::{ScoringConfig, SimilarityConfig},
     retriever::LatentStore,
 };
 
@@ -63,12 +62,12 @@ pub mod test {
             .sources(vec![
                 Source::files(FileStoreType::Csv)
                     .has_header(true)
-                    .num_rows(10)
+                    .num_rows(1000)
                     .path("./assets/csv")
                     .build()
                     .unwrap(),
                 Source::files(FileStoreType::Parquet)
-                    .num_rows(10)
+                    .num_rows(1000)
                     .path("./assets/parquet")
                     .build()
                     .unwrap(),

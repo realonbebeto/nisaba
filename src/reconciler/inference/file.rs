@@ -1,10 +1,10 @@
 use arrow::{
     array::{
-        ArrayRef, BooleanArray, Date64Array, Float64Array, Int64Array, NullArray, RecordBatch,
-        StringArray,
+        ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, RecordBatch, StringArray,
+        TimestampMillisecondArray,
     },
     csv::{ReaderBuilder, reader::Format},
-    datatypes::{DataType, Field, Schema},
+    datatypes::{DataType, Field, Schema, TimeUnit},
 };
 use calamine::{Data, Ods, Range, Reader, Table, Xls, Xlsb, Xlsx, XlsxError, open_workbook};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -17,12 +17,12 @@ use std::{
 };
 
 use crate::{
-    analyzer::{
+    error::NisabaError,
+    reconciler::{
+        InferenceStats,
         datastore::Source,
         inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
-        probe::InferenceStats,
     },
-    error::NisabaError,
     types::{TableDef, TableRep},
 };
 
@@ -118,7 +118,6 @@ impl CsvInferenceEngine {
         let (schema, _) = Format::default()
             .with_header(source.metadata.has_header)
             .infer_schema(&mut file, Some(source.metadata.num_rows))?;
-
         file.rewind()?;
 
         // 2. Read batch for stats and promotion(inference)
@@ -656,7 +655,7 @@ fn read_range_to_arrow(
 
                     Some(DataType::Boolean)
                 }
-                DataType::Date64 => {
+                DataType::Timestamp(TimeUnit::Millisecond, z) => {
                     let vals: Vec<Option<i64>> = values
                         .iter()
                         .map(|val| {
@@ -678,9 +677,9 @@ fn read_range_to_arrow(
                         })
                         .collect();
 
-                    columns.push(Arc::new(Date64Array::from(vals)));
+                    columns.push(Arc::new(TimestampMillisecondArray::from(vals)));
 
-                    Some(DataType::Date64)
+                    Some(DataType::Timestamp(TimeUnit::Millisecond, z))
                 }
                 DataType::Int64 => {
                     let vals: Vec<Option<i64>> = values
@@ -759,7 +758,7 @@ fn calamine_type_to_arrow(values: &[&Data]) -> DataType {
     } else if values.iter().all(|val| **val == Data::Empty) {
         DataType::Null
     } else if values.iter().all(|val| matches!(**val, Data::DateTime(_))) {
-        DataType::Date64
+        DataType::Timestamp(TimeUnit::Millisecond, None)
     } else if values.iter().all(|val| matches!(**val, Data::Int(_))) {
         DataType::Int64
     } else if values.iter().all(|val| matches!(**val, Data::Float(_))) {
@@ -780,7 +779,7 @@ fn calamine_type_to_arrow(values: &[&Data]) -> DataType {
 #[cfg(test)]
 mod tests {
 
-    use crate::analyzer::datastore::FileStoreType;
+    use crate::reconciler::datastore::FileStoreType;
 
     use crate::test::get_test_latent_store;
 

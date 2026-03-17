@@ -1,9 +1,9 @@
 use arrow::{
     array::{
-        Array, AsArray, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, ListArray,
-        RecordBatch, RecordBatchIterator, StringArray,
+        Array, AsArray, BooleanArray, FixedSizeListArray, Float32Array, Int16Array, Int32Array,
+        ListArray, RecordBatch, RecordBatchIterator, StringArray,
     },
-    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
+    buffer::{OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Float32Type, Schema},
     error::ArrowError,
 };
@@ -16,17 +16,18 @@ use lancedb::{
     query::{ExecutableQuery, QueryBase, Select},
 };
 use nalgebra::DVector;
-use std::{marker::PhantomData, path::PathBuf, str::FromStr, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    analyzer::{
-        AnalyzerConfig,
-        report::{FieldMatch, TableMatch},
-    },
     error::NisabaError,
-    types::{FieldDef, TableDef, TableRep},
+    reconciler::{
+        AnalyzerConfig,
+        calculation::{field_weight, l2_norm},
+        report::{FieldMatch, LoadedFields, TableMatch},
+    },
+    types::{FieldDef, FieldProfile, TableDef, TableRep},
 };
 
 /// The `Storable` trait defines how to access common attributes of the store
@@ -45,8 +46,8 @@ pub trait Storable: Send + Sync {
     /// Get the id of the store element (TableDef/FieldDef)
     fn get_id(&self) -> Uuid;
 
-    /// Get silo_id
-    fn silo_id(&self) -> &str;
+    /// Get table_id
+    fn table_id(&self) -> &Uuid;
 
     /// Get the name of the resource for this type
     fn vtable_name() -> &'static str;
@@ -171,7 +172,7 @@ impl<T: Storable> TableHandler<T> {
         Ok(())
     }
 
-    /// This `create_index_on_table_rep` function handles creation of table index for performant retrieval
+    /// This `create_index` function handles creation of table index for performant retrieval
     ///
     /// Returns:
     ///
@@ -207,20 +208,31 @@ impl<T: Storable> TableHandler<T> {
     ///
     /// A `Result` of a `Vec` of SearchResult values on success and NisabaError when
     /// embedding generation, search, and creation of the SearchResult fails.
-    pub async fn search_table_rep(
+    pub async fn search_tables(
         &self,
-        item: Uuid,
+        table_reps: &[TableRep],
         columns: Vec<String>,
-    ) -> Result<Vec<TableMatch>, NisabaError> {
+    ) -> Result<Vec<(TableRep, Vec<TableMatch>)>, NisabaError> {
         let table = self
             .conn
             .open_table(TableRep::vtable_name())
             .execute()
             .await?;
 
+        // let silo_id = table_reps[0].silo_id.clone();
+
+        let filter_ids = format!(
+            "('{}')",
+            table_reps
+                .iter()
+                .map(|f| f.id.to_string())
+                .collect::<Vec<_>>()
+                .join("','")
+        );
+
         let mut embed_batches = table
             .query()
-            .only_if(format!("id = \'{}\'", item)) // No need for .to_string() if item is already displayable
+            .only_if(format!("id IN {}", filter_ids)) // No need for .to_string() if item is already displayable
             .select(Select::Columns(vec!["vector".into()]))
             .execute()
             .await?
@@ -231,35 +243,46 @@ impl<T: Storable> TableHandler<T> {
             .pop()
             .ok_or_else(|| NisabaError::NoTableDefGenerated)?;
 
-        let embedding: Vec<f32> = embed_batches
+        let embeddings: Vec<Vec<f32>> = embed_batches
             .column(0)
             .as_fixed_size_list()
-            .value(0)
-            .as_primitive::<Float32Type>()
-            .values()
-            .to_vec();
+            .iter()
+            .map(|opt_arr| {
+                opt_arr
+                    .unwrap()
+                    .as_primitive::<Float32Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
 
-        let batches = table
+        let mut query = table
             .query()
-            .only_if(format!("id != \'{}\'", item))
-            .nearest_to(embedding)?
-            .nprobes(self.config.similarity.top_k.unwrap_or(7))
-            .refine_factor(5)
-            .limit(self.config.similarity.top_k.unwrap_or(7))
+            // .only_if(format!("silo_id != \'{}\'", silo_id))
+            .nearest_to(embeddings[0].clone())?;
+
+        for embed in embeddings.iter().skip(1) {
+            query = query.add_query_vector(embed.clone())?;
+        }
+
+        let batches = query
+            .nprobes(self.config.similarity.top_k.unwrap_or(20))
+            .refine_factor(20)
+            .limit(self.config.similarity.top_k.unwrap_or(20))
             .select(Select::Columns(columns))
             .distance_type(self.config.similarity.algorithm)
-            .distance_range(Some(0.), Some(1. - self.config.similarity.threshold))
+            // .distance_range(Some(0.), Some(1. - self.config.similarity.threshold))
             .execute()
             .await?
             .try_collect::<Vec<_>>()
             .await?;
 
-        let results = table_from_record_batches(batches)?;
+        let results = table_from_record_batches(table_reps, batches)?;
 
         Ok(results)
     }
 
-    /// This `search_field_def` function performs a search in the latent store and returns a vector
+    /// This `load_fields` function performs a search in the latent store and returns a vector
     /// of FieldMatch
     ///
     /// Arguments:
@@ -273,63 +296,38 @@ impl<T: Storable> TableHandler<T> {
     ///
     /// A `Result` of a `Vec` of SearchResult values on success and NisabaError when
     /// embedding generation, search, and creation of the SearchResult fails.
-    pub async fn search_field_def(
+    pub async fn load_fields(
         &self,
-        item: Uuid,
+        query_table_id: &Uuid,
+        table_ids: &[Uuid],
         columns: Vec<String>,
-    ) -> Result<Vec<FieldMatch>, NisabaError> {
+    ) -> Result<LoadedFields, NisabaError> {
         let table = self
             .conn
             .open_table(FieldDef::vtable_name())
             .execute()
             .await?;
 
-        let mut embed_batches = table
-            .query()
-            .only_if(format!("id = \'{}\'", item)) // No need for .to_string() if item is already displayable
-            .select(Select::Columns(vec!["table_name".into(), "vector".into()]))
-            .execute()
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-
-        let embed_batches = embed_batches
-            .pop()
-            .ok_or_else(|| NisabaError::NoRecordBatch)?;
-
-        let embedding: Vec<f32> = embed_batches
-            .column(1)
-            .as_fixed_size_list()
-            .value(0)
-            .as_primitive::<Float32Type>()
-            .values()
-            .to_vec();
-
-        let table_name: String = embed_batches
-            .column(0)
-            .as_string::<i32>()
-            .value(0)
-            .to_string();
+        let filter_ids = format!(
+            "('{}')",
+            table_ids
+                .iter()
+                .chain(std::iter::once(query_table_id))
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join("','")
+        );
 
         let batches = table
             .query()
-            .only_if(format!(
-                "id != \'{}\' AND table_name != \'{}\'",
-                item, table_name
-            ))
-            .nearest_to(embedding)?
-            .nprobes(self.config.similarity.top_k.unwrap_or(7))
-            .refine_factor(5)
-            .limit(self.config.similarity.top_k.unwrap_or(7))
+            .only_if(format!(" table_id IN {}", filter_ids))
             .select(Select::Columns(columns))
-            .distance_type(self.config.similarity.algorithm)
-            .distance_range(Some(0.), Some(1. - self.config.similarity.threshold))
             .execute()
             .await?
             .try_collect::<Vec<_>>()
             .await?;
 
-        let results = fields_from_record_batches(batches)?;
+        let results = fields_from_record_batches(query_table_id, batches)?;
 
         Ok(results)
     }
@@ -343,14 +341,13 @@ impl<T: Storable> TableHandler<T> {
     }
 
     pub async fn store_tables(&self, table_defs: Vec<TableDef>) -> Result<(), NisabaError> {
-        let field_texts: Vec<(&FieldDef, String)> = table_defs
+        let field_texts: Vec<(&FieldProfile, String)> = table_defs
             .iter()
             .flat_map(|table_def| {
                 let mut text_buffer = String::new();
                 table_def.fields.iter().map(move |field| {
                     text_buffer.clear();
                     field.write_field_def_paragraph(&mut text_buffer);
-
                     (field, text_buffer.clone())
                 })
             })
@@ -367,7 +364,7 @@ impl<T: Storable> TableHandler<T> {
             )?
         };
 
-        let field_embeds: Vec<(&FieldDef, Vec<f32>)> = field_texts
+        let field_embeds: Vec<(&FieldProfile, Vec<f32>)> = field_texts
             .iter()
             .zip(embeddings.iter())
             .map(|((field_def, _text), embedding)| (*field_def, embedding.clone()))
@@ -376,35 +373,30 @@ impl<T: Storable> TableHandler<T> {
         let table_embeds: Vec<(&TableDef, Vec<f32>)> = table_defs
             .iter()
             .map(|t| {
-                let mut total_field_embed = vec![0.0f32; self.dim];
-                let emb = field_embeds.iter().filter(|f| {
-                    let field_ids = t.fields.iter().map(|i| i.id).collect::<Vec<Uuid>>();
+                // Group fields by table
+                let field_embeds = field_embeds.iter().filter(|f| {
+                    let field_ids = t
+                        .fields
+                        .iter()
+                        .map(|i| i.field_def.id)
+                        .collect::<Vec<Uuid>>();
 
-                    field_ids.contains(&f.0.id)
+                    field_ids.contains(&f.0.field_def.id)
                 });
 
-                for row in emb {
-                    for (i, &val) in row.1.iter().enumerate() {
-                        total_field_embed[i] += val;
-                    }
-                }
+                let (accumulator, total_weight) = field_embeds.fold(
+                    (DVector::zeros(self.dim), 0.0),
+                    |(mut acc, total_w), (field_def, embedding)| {
+                        let weight = field_weight(field_def.field_stats.as_ref().unwrap());
+                        let embeding = DVector::from_vec(embedding.clone());
 
-                let height = t.fields.len();
-
-                total_field_embed
-                    .iter_mut()
-                    .for_each(|x| *x /= height as f32);
-
-                let total_field_embed: DVector<f32> = DVector::from_vec(total_field_embed);
-
-                // Table Stats Embedding
-                let structure_embed = t.structure().embedding();
+                        acc.axpy(weight, &embeding, 1.0);
+                        (acc, total_w + weight)
+                    },
+                );
 
                 // Table Combined embedding
-                let table_embedding = ((self.config.scoring.type_weight) * total_field_embed
-                    + self.config.scoring.structure_weight * structure_embed)
-                    .as_slice()
-                    .to_vec();
+                let table_embedding = l2_norm(accumulator / total_weight).as_slice().to_vec();
 
                 (t, table_embedding)
             })
@@ -444,22 +436,28 @@ impl<T: Storable> TableHandler<T> {
     }
 }
 
-fn table_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<TableMatch>, NisabaError> {
-    let mut schemas = Vec::new();
+fn table_from_record_batches(
+    table_reps: &[TableRep],
+    batches: Vec<RecordBatch>,
+) -> Result<Vec<(TableRep, Vec<TableMatch>)>, NisabaError> {
+    let mut table_matches = Vec::with_capacity(batches.len());
 
     for batch in batches {
-        // Get id values
-        let id_array = batch
+        // Get index value
+        let index_value = batch
             .column(0)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Int32Array>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 0 is not StringArray, got {:?}",
+                "Column 0 is not Int32Array, got {:?}",
                 batch.column(0).data_type()
-            )))?;
+            )))?
+            .value(0);
 
-        // Get silo_id values
-        let silo_id_array = batch
+        let source = table_reps[index_value as usize].clone();
+
+        // Get id values
+        let id_array = batch
             .column(1)
             .as_any()
             .downcast_ref::<StringArray>()
@@ -468,8 +466,8 @@ fn table_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<TableMatch
                 batch.column(1).data_type()
             )))?;
 
-        // Get name values
-        let name_array = batch
+        // Get silo_id values
+        let silo_id_array = batch
             .column(2)
             .as_any()
             .downcast_ref::<StringArray>()
@@ -478,33 +476,57 @@ fn table_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<TableMatch
                 batch.column(2).data_type()
             )))?;
 
+        // Get name values
+        let table_schema_array = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or(ArrowError::CastError(format!(
+                "Column 3 is not StringArray, got {:?}",
+                batch.column(3).data_type()
+            )))?;
+
+        // Get name values
+        let name_array = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or(ArrowError::CastError(format!(
+                "Column 4 is not StringArray, got {:?}",
+                batch.column(4).data_type()
+            )))?;
+
         let fields_list =
             batch
-                .column(3)
+                .column(5)
                 .as_any()
                 .downcast_ref::<ListArray>()
                 .ok_or(ArrowError::CastError(format!(
-                    "Column 3 is not ListArray, got {:?}",
-                    batch.column(3).data_type()
+                    "Column 5 is not ListArray, got {:?}",
+                    batch.column(5).data_type()
                 )))?;
 
         let distances = batch
-            .column(4)
+            .column(6)
             .as_any()
             .downcast_ref::<Float32Array>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 4 is not Float32Array, got {:?}",
-                batch.column(4).data_type()
+                "Column 6 is not Float32Array, got {:?}",
+                batch.column(6).data_type()
             )))?;
+
+        let mut tmp_match = Vec::with_capacity(batch.num_rows());
 
         for row_idx in 0..batch.num_rows() {
             let id = Uuid::from_str(id_array.value(row_idx))?;
 
             let silo_id = silo_id_array.value(row_idx).to_string();
 
+            let table_schema = table_schema_array.value(row_idx).to_string();
+
             let name = name_array.value(row_idx).to_string();
 
-            let field_ids = fields_list.value(0);
+            let field_ids = fields_list.value(row_idx);
 
             let field_ids =
                 field_ids
@@ -522,19 +544,30 @@ fn table_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<TableMatch
                 fields.push(id);
             }
 
-            let confidence = distances.value(row_idx);
+            let confidence = 1.0 - distances.value(row_idx);
+            let num_fields = fields.len();
 
             let schema = TableRep {
                 id,
                 silo_id,
+                table_schema,
                 name,
                 fields,
             };
-            schemas.push(TableMatch { schema, confidence });
+
+            // Remove self matches
+            let ratio = num_fields as f32 / source.fields.len() as f32;
+
+            // TODO: SizeCompatibilityConfig struct
+            if ratio >= 0.7 && ratio <= 1.3 {
+                tmp_match.push(TableMatch { schema, confidence });
+            }
         }
+
+        table_matches.push((source, tmp_match));
     }
 
-    Ok(schemas)
+    Ok(table_matches)
 }
 
 fn table_to_record_batch(
@@ -545,6 +578,10 @@ fn table_to_record_batch(
     let ids = StringArray::from_iter_values(items.iter().map(|t| t.0.id.to_string()));
 
     let silo_ids = StringArray::from_iter_values(items.iter().map(|t| t.0.silo_id.clone()));
+
+    let table_schemas =
+        StringArray::from_iter_values(items.iter().map(|t| t.0.table_schema.clone()));
+
     let names = StringArray::from_iter_values(items.iter().map(|t| t.0.name.clone()));
 
     let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
@@ -558,6 +595,8 @@ fn table_to_record_batch(
         dim as i32,
     );
 
+    let num_fields = Int16Array::from_iter_values(items.iter().map(|t| t.0.fields.len() as i16));
+
     let capacity = items.iter().map(|t| t.0.fields.len()).sum::<usize>();
 
     // For char signature
@@ -570,7 +609,7 @@ fn table_to_record_batch(
             &table
                 .fields
                 .iter()
-                .map(|f| f.id.to_string())
+                .map(|f| f.field_def.id.to_string())
                 .collect::<Vec<String>>(),
         );
 
@@ -589,9 +628,11 @@ fn table_to_record_batch(
         vec![
             Arc::new(ids),
             Arc::new(silo_ids),
+            Arc::new(table_schemas),
             Arc::new(names),
-            Arc::new(vectors),
             Arc::new(fields),
+            Arc::new(num_fields),
+            Arc::new(vectors),
         ],
     )?;
 
@@ -614,8 +655,12 @@ fn table_to_record_batch(
 /// structs, which represent the schema information extracted from the input `RecordBatch`
 /// instances. The `FieldMatch` struct contains a `FieldDef` struct representing the schema details
 /// of a field/column and a confidence value associated with that schema.
-fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatch>, NisabaError> {
-    let mut schemas = Vec::new();
+fn fields_from_record_batches(
+    query_table_id: &Uuid,
+    batches: Vec<RecordBatch>,
+) -> Result<LoadedFields, NisabaError> {
+    let mut query_fields = Vec::new();
+    let mut candidate_fields: HashMap<Uuid, Vec<FieldMatch>> = HashMap::new();
 
     for batch in batches {
         let ids_array = batch
@@ -627,8 +672,8 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 batch.column(0).data_type()
             )))?;
 
-        // Get silo_id values
-        let silo_id_array = batch
+        // Get table_id values
+        let table_id_array = batch
             .column(1)
             .as_any()
             .downcast_ref::<StringArray>()
@@ -637,8 +682,8 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 batch.column(1).data_type()
             )))?;
 
-        // Get table name values
-        let table_schema_array = batch
+        // Get name values
+        let name_array = batch
             .column(2)
             .as_any()
             .downcast_ref::<StringArray>()
@@ -647,8 +692,8 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 batch.column(2).data_type()
             )))?;
 
-        // Get table name values
-        let table_name_array = batch
+        // Get canonical_type values
+        let canonical_type_array = batch
             .column(3)
             .as_any()
             .downcast_ref::<StringArray>()
@@ -657,18 +702,18 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 batch.column(3).data_type()
             )))?;
 
-        // Get name values
-        let name_array = batch
+        //Type confidence
+        let type_confidence_array = batch
             .column(4)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<Float32Array>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 4 is not StringArray, got {:?}",
+                "Column 4 is not Float32Array, got {:?}",
                 batch.column(4).data_type()
             )))?;
 
-        // Get canonical_type values
-        let canonical_type_array = batch
+        // Column Default
+        let column_default_array = batch
             .column(5)
             .as_any()
             .downcast_ref::<StringArray>()
@@ -677,130 +722,67 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 batch.column(5).data_type()
             )))?;
 
-        //Type confidence
-        let type_confidence_array = batch
-            .column(6)
-            .as_any()
-            .downcast_ref::<Float32Array>()
-            .ok_or(ArrowError::CastError(format!(
-                "Column 6 is not Float32Array, got {:?}",
-                batch.column(6).data_type()
-            )))?;
-
-        // Cardinality
-        let cardinality_array = batch
-            .column(7)
-            .as_any()
-            .downcast_ref::<Float32Array>()
-            .ok_or(ArrowError::CastError(format!(
-                "Column 7 is not Float32Array, got {:?}",
-                batch.column(7).data_type()
-            )))?;
-
-        // Avg Byte Len
-        let avg_byte_len_array = batch
-            .column(8)
-            .as_any()
-            .downcast_ref::<Float32Array>()
-            .ok_or(ArrowError::CastError(format!(
-                "Column 8 is not Float32Array, got {:?}",
-                batch.column(8).data_type()
-            )))?;
-
-        // Monotonicity
-        let monotonicity_array = batch
-            .column(9)
-            .as_boolean_opt()
-            .ok_or(ArrowError::CastError(format!(
-                "Column 9 is not BooleanArray, got {:?}",
-                batch.column(9).data_type()
-            )))?;
-
-        // Class signature
-        let class_signature_array =
-            batch
-                .column(10)
-                .as_list_opt::<i32>()
-                .ok_or(ArrowError::CastError(format!(
-                    "Column 10 is not ListArray, got {:?}",
-                    batch.column(10).data_type()
-                )))?;
-
-        // Column Default
-        let column_default_array = batch
-            .column(11)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or(ArrowError::CastError(format!(
-                "Column 11 is not StringArray, got {:?}",
-                batch.column(11).data_type()
-            )))?;
-
         // Nullable
         let nullable_array = batch
-            .column(12)
+            .column(6)
             .as_boolean_opt()
             .ok_or(ArrowError::CastError(format!(
-                "Column 12 is not BooleanArray, got {:?}",
-                batch.column(12).data_type()
+                "Column 6 is not BooleanArray, got {:?}",
+                batch.column(6).data_type()
             )))?;
 
         // Char Max Length
         let char_max_len_array = batch
-            .column(13)
+            .column(7)
             .as_any()
             .downcast_ref::<Int32Array>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 13 is not Int32Array, got {:?}",
-                batch.column(13).data_type()
+                "Column 7 is not Int32Array, got {:?}",
+                batch.column(7).data_type()
             )))?;
 
         // Numeric precision
         let numeric_precision_array = batch
-            .column(14)
+            .column(8)
             .as_any()
             .downcast_ref::<Int32Array>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 14 is not Int32Array, got {:?}",
-                batch.column(14).data_type()
+                "Column 8 is not Int32Array, got {:?}",
+                batch.column(8).data_type()
             )))?;
 
         // Numeric scale
         let numeric_scale_array = batch
-            .column(15)
+            .column(9)
             .as_any()
             .downcast_ref::<Int32Array>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 15 is not Int32Array, got {:?}",
-                batch.column(15).data_type()
+                "Column 9 is not Int32Array, got {:?}",
+                batch.column(9).data_type()
             )))?;
 
         // Datetime precision
         let datetime_precision_array = batch
-            .column(16)
+            .column(10)
             .as_any()
             .downcast_ref::<Int32Array>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 16 is not Int32Array, got {:?}",
-                batch.column(16).data_type()
+                "Column 10 is not Int32Array, got {:?}",
+                batch.column(10).data_type()
             )))?;
 
-        let distances = batch
-            .column(17)
+        let embedding_array = batch
+            .column(11)
             .as_any()
-            .downcast_ref::<Float32Array>()
+            .downcast_ref::<FixedSizeListArray>()
             .ok_or(ArrowError::CastError(format!(
-                "Column 17 is not Float32Array, got {:?}",
-                batch.column(17).data_type()
+                "Column 11 is not FixedSizeListArray, got {:?}",
+                batch.column(11).data_type()
             )))?;
 
         for row_idx in 0..batch.num_rows() {
             let id = Uuid::from_str(ids_array.value(row_idx))?;
-            let silo_id = silo_id_array.value(row_idx).to_string();
-
-            let table_schema = table_schema_array.value(row_idx).to_string();
-
-            let table_name = table_name_array.value(row_idx).to_string();
+            let table_id = Uuid::from_str(table_id_array.value(row_idx))?;
 
             let name = name_array.value(row_idx).to_string();
 
@@ -810,34 +792,6 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 None
             } else {
                 Some(type_confidence_array.value(row_idx))
-            };
-
-            let cardinality = if cardinality_array.is_null(row_idx) {
-                None
-            } else {
-                Some(cardinality_array.value(row_idx))
-            };
-
-            let avg_byte_length = if avg_byte_len_array.is_null(row_idx) {
-                None
-            } else {
-                Some(avg_byte_len_array.value(row_idx))
-            };
-
-            let is_monotonic = monotonicity_array.value(row_idx);
-
-            let char_class_signature = if class_signature_array.is_null(row_idx) {
-                None
-            } else {
-                let values = class_signature_array.value(row_idx);
-                let values = values.as_primitive::<Float32Type>();
-
-                Some([
-                    values.value(0),
-                    values.value(1),
-                    values.value(2),
-                    values.value(3),
-                ])
             };
 
             let column_default = if column_default_array.is_null(row_idx) {
@@ -872,20 +826,22 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 Some(datetime_precision_array.value(row_idx))
             };
 
-            let confidence = distances.value(row_idx);
+            let embedding = embedding_array
+                .value(row_idx)
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .ok_or(ArrowError::CastError(
+                    "Inner array is not Float32Array".to_string(),
+                ))?
+                .values()
+                .to_vec();
 
             let schema = FieldDef {
                 id,
-                silo_id,
-                table_schema,
-                table_name,
+                table_id,
                 name,
                 canonical_type,
                 type_confidence,
-                cardinality,
-                avg_byte_length,
-                is_monotonic,
-                char_class_signature,
                 column_default,
                 is_nullable,
                 char_max_length,
@@ -894,151 +850,106 @@ fn fields_from_record_batches(batches: Vec<RecordBatch>) -> Result<Vec<FieldMatc
                 datetime_precision,
             };
 
-            schemas.push(FieldMatch { schema, confidence });
+            if query_table_id == &table_id {
+                query_fields.push(FieldMatch {
+                    schema,
+                    embedding: DVector::from_vec(embedding),
+                });
+            } else {
+                candidate_fields
+                    .entry(table_id)
+                    .or_insert(Vec::new())
+                    .push(FieldMatch {
+                        schema,
+                        embedding: DVector::from_vec(embedding),
+                    });
+            }
         }
     }
 
-    Ok(schemas)
+    Ok(LoadedFields {
+        query_fields,
+        candidate_fields,
+    })
 }
 
 fn fields_to_record_batch(
-    items: Vec<(&FieldDef, Vec<f32>)>,
+    items: Vec<(&FieldProfile, Vec<f32>)>,
     schema: Arc<Schema>,
     dim: usize,
 ) -> Result<RecordBatch, NisabaError> {
-    let ids = StringArray::from_iter_values(items.iter().map(|f| f.0.id.to_string()));
+    let ids = StringArray::from_iter_values(items.iter().map(|f| f.0.field_def.id.to_string()));
 
-    let silo_ids = StringArray::from(
+    let table_ids = StringArray::from(
         items
             .iter()
-            .map(|f| f.0.silo_id.clone())
-            .collect::<Vec<String>>(),
-    );
-
-    let table_schemas = StringArray::from(
-        items
-            .iter()
-            .map(|f| f.0.table_schema.clone())
-            .collect::<Vec<String>>(),
-    );
-
-    let table_names = StringArray::from(
-        items
-            .iter()
-            .map(|f| f.0.table_name.clone())
+            .map(|f| f.0.field_def.table_id.to_string())
             .collect::<Vec<String>>(),
     );
 
     let names = StringArray::from(
         items
             .iter()
-            .map(|f| f.0.name.clone())
+            .map(|f| f.0.field_def.name.clone())
             .collect::<Vec<String>>(),
     );
 
     let canonical_types = StringArray::from(
         items
             .iter()
-            .map(|f| f.0.canonical_type.to_string())
+            .map(|f| f.0.field_def.canonical_type.to_string())
             .collect::<Vec<String>>(),
     );
-
-    let capacity = items.len();
 
     // For type confidence
     let type_confidence_array = Float32Array::from(
         items
             .iter()
-            .map(|f| f.0.type_confidence)
+            .map(|f| f.0.field_def.type_confidence)
             .collect::<Vec<Option<f32>>>(),
     );
-
-    // For cardinality
-    let cardinalities_array = Float32Array::from(
-        items
-            .iter()
-            .map(|f| f.0.cardinality)
-            .collect::<Vec<Option<f32>>>(),
-    );
-
-    // For average byte length
-    let avg_byte_lens_array = Float32Array::from(
-        items
-            .iter()
-            .map(|f| f.0.avg_byte_length)
-            .collect::<Vec<Option<f32>>>(),
-    );
-
-    // For monotonicity
-    let monotonic_flag_array = BooleanArray::from(
-        items
-            .iter()
-            .map(|f| f.0.is_monotonic)
-            .collect::<Vec<bool>>(),
-    );
-
-    // For char signature
-    let mut char_class_values = Vec::with_capacity(capacity * 4);
-    let mut char_class_offsets = Vec::with_capacity(capacity);
-    char_class_offsets.push(0i32);
-    let mut char_class_nulls = Vec::with_capacity(capacity);
 
     // Column Defaults
     let column_defaults_array = StringArray::from(
         items
             .iter()
-            .map(|f| f.0.column_default.clone())
+            .map(|f| f.0.field_def.column_default.clone())
             .collect::<Vec<Option<String>>>(),
     );
 
-    let nullable_array =
-        BooleanArray::from(items.iter().map(|f| f.0.is_nullable).collect::<Vec<bool>>());
+    let nullable_array = BooleanArray::from(
+        items
+            .iter()
+            .map(|f| f.0.field_def.is_nullable)
+            .collect::<Vec<bool>>(),
+    );
 
     let char_max_lengths_array = Int32Array::from(
         items
             .iter()
-            .map(|f| f.0.char_max_length)
+            .map(|f| f.0.field_def.char_max_length)
             .collect::<Vec<Option<i32>>>(),
     );
 
     let numeric_precision_array = Int32Array::from(
         items
             .iter()
-            .map(|f| f.0.numeric_precision)
+            .map(|f| f.0.field_def.numeric_precision)
             .collect::<Vec<Option<i32>>>(),
     );
 
     let numeric_scale_array = Int32Array::from(
         items
             .iter()
-            .map(|f| f.0.numeric_scale)
+            .map(|f| f.0.field_def.numeric_scale)
             .collect::<Vec<Option<i32>>>(),
     );
 
     let datetime_precision_array = Int32Array::from(
         items
             .iter()
-            .map(|f| f.0.datetime_precision)
+            .map(|f| f.0.field_def.datetime_precision)
             .collect::<Vec<Option<i32>>>(),
-    );
-
-    for (field, _) in &items {
-        // Char class signature
-        if let Some(ccs) = field.char_class_signature {
-            char_class_values.extend_from_slice(&ccs);
-            char_class_offsets.push(char_class_values.len() as i32);
-            char_class_nulls.push(true);
-        } else {
-            char_class_nulls.push(false);
-            char_class_offsets.push(char_class_values.len() as i32);
-        }
-    }
-
-    let char_class_array = ListArray::new(
-        Arc::new(Field::new("item", DataType::Float32, false)),
-        OffsetBuffer::new(ScalarBuffer::from(char_class_offsets)),
-        Arc::new(Float32Array::from(char_class_values)),
-        Some(NullBuffer::from(char_class_nulls)),
     );
 
     let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
@@ -1057,16 +968,10 @@ fn fields_to_record_batch(
         schema.clone(),
         vec![
             Arc::new(ids),
-            Arc::new(silo_ids),
-            Arc::new(table_schemas),
-            Arc::new(table_names),
+            Arc::new(table_ids),
             Arc::new(names),
             Arc::new(canonical_types),
             Arc::new(type_confidence_array),
-            Arc::new(cardinalities_array),
-            Arc::new(avg_byte_lens_array),
-            Arc::new(monotonic_flag_array),
-            Arc::new(char_class_array),
             Arc::new(column_defaults_array),
             Arc::new(nullable_array),
             Arc::new(char_max_lengths_array),

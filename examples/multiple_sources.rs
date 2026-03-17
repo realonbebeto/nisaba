@@ -13,7 +13,7 @@ async fn main() {
         })
         .similarity(SimilarityConfig {
             threshold: 0.59,
-            top_k: Some(7),
+            top_k: None,
             algorithm: DistanceType::Cosine,
         })
         .build();
