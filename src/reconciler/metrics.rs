@@ -547,7 +547,7 @@ impl FieldStats {
         stats.distinct_count = distinct_set.len();
         stats.character_max_length = Some(max_len as i32);
         stats.character_min_length = Some(min_len as i32);
-        stats.avg = total_len as f64 / (stats.sample_size - stats.null_count) as f64;
+        stats.avg = total_len as f64 / stats.sample_size as f64;
         stats.all_uuid = Some(all_uuid);
         stats.all_array = Some(all_array);
         stats.all_utf8_bools = Some(all_utf8_bools);
