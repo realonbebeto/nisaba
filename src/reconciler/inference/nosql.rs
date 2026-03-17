@@ -14,12 +14,12 @@ use std::{
 };
 
 use crate::{
-    analyzer::{
+    error::NisabaError,
+    reconciler::{
+        InferenceStats,
         datastore::{Extra, Source},
         inference::{SchemaInferenceEngine, SourceField, convert_into_table_defs},
-        probe::InferenceStats,
     },
-    error::NisabaError,
     types::{TableDef, TableRep},
 };
 
@@ -463,7 +463,7 @@ fn merge_types(type_a: &DataType, type_b: &DataType) -> DataType {
 #[cfg(test)]
 mod tests {
 
-    use crate::{analyzer::datastore::Source, test::get_test_latent_store, types::FieldDef};
+    use crate::{reconciler::datastore::Source, test::get_test_latent_store, types::FieldDef};
 
     use super::*;
 
