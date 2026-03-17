@@ -728,22 +728,6 @@ fn cluster_tables(
         .map(|(cluster_id, group)| build_table_cluster(cluster_id as u32, group, &field_clusters))
         .collect();
 
-    // Append zero-match tables as explicit singleton clusters (distinct cluster_id range for distinguishability)
-    // let singleton_offset = clusters.len() as u32;
-    // for (i, ts) in empty.into_iter().enumerate() {
-    //     clusters.push(TableCluster {
-    //         cluster_id: singleton_offset + i as u32,
-    //         tables: vec![TableResult {
-    //             id: ts.table_id,
-    //             silo_id: ts.silo_id.clone(),
-    //             table_name: ts.table_name.clone(),
-    //         }],
-    //         field_clusters: vec![],
-    //         confidence: 0.0,
-    //         coverage_score: 0.0,
-    //     });
-    // }
-
     clusters
 }
 
