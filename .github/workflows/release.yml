@@ -28,7 +28,10 @@ jobs:
 
       - &dprint-install
         name: Install dprint
-        run: curl -fsSL https://dprint.dev/install.sh | sh
+        run: |
+          curl -fsSL https://dprint.dev/install.sh | sh
+          echo "DPRINT_INSTALL=/home/runner/.dprint" >> $GITHUB_ENV
+          echo "/home/runner/.dprint/bin" >> $GITHUB_PATH
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
