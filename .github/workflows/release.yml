@@ -26,6 +26,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - &dprint-install
+        name: Install dprint
+        run: curl -fsSL https://dprint.dev/install.sh | sh
+
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:
@@ -53,6 +57,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      
+      - *dprint-install
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
