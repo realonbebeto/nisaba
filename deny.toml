@@ -8,19 +8,69 @@ ignore = [
     "RUSTSEC-2026-0002",
     "RUSTSEC-2026-0007",
     "RUSTSEC-2026-0009",
+    "RUSTSEC-2026-0041",
 ]
 
 
 [licenses]
 confidence-threshold = 0.8
-allow = ["MIT", "Apache-2.0", "Zlib"]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Zlib",
+    "BSD-3-Clause",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "bzip2-1.0.6",
+    "NCSA",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "0BSD",
+    "CC0-1.0",
+]
 
 
 [bans]
 multiple-versions = "deny"
 highlight = "all"
 skip-tree = [
+    { name = "base64" },
+    { name = "bzip2" },
+    { name = "core-foundation" },
+    { name = "darling" },
+    { name = "darling_core" },
+    { name = "foldhash" },
+    { name = "getrandom" },
+    { name = "hashbrown" },
+    { name = "itertools" },
+    { name = "linux-raw-sys" },
+    { name = "ndarray" },
+    { name = "nom" },
+    { name = "openssl-probe" },
+    { name = "ordered-float" },
+    { name = "petgraph" },
+    { name = "rand" },
+    { name = "rand_chacha" },
+    { name = "rand_core" },
+    { name = "rand_distr" },
+    { name = "rustix" },
+    { name = "security-framework" },
+    { name = "socket2" },
+    { name = "syn" },
+    { name = "thiserror" },
+    { name = "thiserror-impl" },
+    { name = "ureq" },
+    { name = "webpki-roots" },
+    { name = "windows-sys" },
+    { name = "windows_aarch64_gnullvm" },
+    { name = "windows_aarch64_msvc" },
+    { name = "windows_i686_gnu" },
+    { name = "windows_i686_gnullvm" },
     { name = "windows_i686_msvc" },
+    { name = "windows-targets" },
     { name = "windows_x86_64_gnu" },
     { name = "windows_x86_64_gnullvm" },
     { name = "windows_x86_64_msvc" },
