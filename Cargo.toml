@@ -26,21 +26,21 @@ readme = "README.md"
 exclude = ["assets/*"]
 
 [dependencies]
-anyhow = { version = "1.0.100" }
-arrow = { version = "56.2.0", features = ["csv"], default-features = false }
-calamine = { version = "0.32.0", default-features = false, features = [
+anyhow = { version = "1.0.102" }
+arrow = { version = "57.2.0", features = ["csv"], default-features = false }
+calamine = { version = "0.34.0", default-features = false, features = [
     "chrono",
 ] }
-chrono = { version = "0.4.42", default-features = false }
+chrono = { version = "0.4.44", default-features = false }
 dirs = { version = "6.0.0" }
-fastembed = { version = "5.8.1" }
-futures = { version = "0.3.31" }
-lancedb = { version = "0.23.0", default-features = false }
-mongodb = { version = "3.4.1", features = ["sync"] }
+fastembed = { version = "5.13.0" }
+futures = { version = "0.3.32" }
+lancedb = { version = "0.27.0", default-features = false }
+mongodb = { version = "3.5.1", features = ["sync"] }
 nalgebra = "0.34.1"
-parquet = { version = "56.2.0", default-features = false }
-rand = { version = "0.9.2", features = ["std_rng"] }
-rand_distr = { version = "0.5.1" }
+parquet = { version = "57.2.0", default-features = false, features = ["arrow"] }
+rand = { version = "0.10.0", features = ["std_rng"] }
+rand_distr = { version = "0.6.0" }
 rayon = { version = "1.11.0" }
 sqlx = { version = "0.8.6", features = [
     "postgres",
@@ -50,13 +50,13 @@ sqlx = { version = "0.8.6", features = [
     "runtime-tokio-native-tls",
 ] }
 thiserror = "2.0.18"
-tokio = { version = "1.49.0", default-features = false, features = ["rt"] }
-uuid = { version = "1.20.0", features = ["v7"], default-features = false }
+tokio = { version = "1.50.0", default-features = false, features = ["rt"] }
+uuid = { version = "1.22.0", features = ["v7"], default-features = false }
 
 [dev-dependencies]
-tempfile = "3.24.0"
+tempfile = "3.27.0"
 
 
 # for minimal-versions
 [target.'cfg(any())'.dependencies]
-openssl = { version = "0.10.55", optional = true }
+openssl = { version = "0.10.76", optional = true }

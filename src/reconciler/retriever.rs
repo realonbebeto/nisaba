@@ -1,7 +1,7 @@
 use arrow::{
     array::{
         Array, AsArray, BooleanArray, FixedSizeListArray, Float32Array, Int16Array, Int32Array,
-        ListArray, RecordBatch, RecordBatchIterator, StringArray,
+        ListArray, RecordBatch, StringArray,
     },
     buffer::{OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Float32Type, Schema},
@@ -406,23 +406,17 @@ impl<T: Storable> TableHandler<T> {
 
         let field_batch = fields_to_record_batch(field_embeds, field_schema.clone(), self.dim)?;
 
-        let field_batches =
-            RecordBatchIterator::new(vec![field_batch].into_iter().map(Ok), field_schema);
-
         let tbl = self
             .conn
             .open_table(FieldDef::vtable_name())
             .execute()
             .await?;
 
-        tbl.add(field_batches).execute().await?;
+        tbl.add(vec![field_batch]).execute().await?;
 
         let table_schema = TableRep::schema(self.dim);
 
         let table_batch = table_to_record_batch(table_embeds, table_schema.clone(), self.dim)?;
-
-        let table_batches =
-            RecordBatchIterator::new(vec![table_batch].into_iter().map(Ok), table_schema);
 
         let tbl = self
             .conn
@@ -430,7 +424,7 @@ impl<T: Storable> TableHandler<T> {
             .execute()
             .await?;
 
-        tbl.add(table_batches).execute().await?;
+        tbl.add(vec![table_batch]).execute().await?;
 
         Ok(())
     }
