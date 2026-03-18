@@ -1,7 +1,7 @@
 use arrow::{
     array::{
         Array, AsArray, BooleanArray, FixedSizeListArray, Float32Array, Int16Array, Int32Array,
-        ListArray, RecordBatch, RecordBatchIterator, StringArray,
+        ListArray, RecordBatch, StringArray,
     },
     buffer::{OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Float32Type, Schema},
@@ -406,23 +406,17 @@ impl<T: Storable> TableHandler<T> {
 
         let field_batch = fields_to_record_batch(field_embeds, field_schema.clone(), self.dim)?;
 
-        let field_batches =
-            RecordBatchIterator::new(vec![field_batch].into_iter().map(Ok), field_schema);
-
         let tbl = self
             .conn
             .open_table(FieldDef::vtable_name())
             .execute()
             .await?;
 
-        tbl.add(field_batches).execute().await?;
+        tbl.add(vec![field_batch]).execute().await?;
 
         let table_schema = TableRep::schema(self.dim);
 
         let table_batch = table_to_record_batch(table_embeds, table_schema.clone(), self.dim)?;
-
-        let table_batches =
-            RecordBatchIterator::new(vec![table_batch].into_iter().map(Ok), table_schema);
 
         let tbl = self
             .conn
@@ -430,7 +424,7 @@ impl<T: Storable> TableHandler<T> {
             .execute()
             .await?;
 
-        tbl.add(table_batches).execute().await?;
+        tbl.add(vec![table_batch]).execute().await?;
 
         Ok(())
     }
@@ -559,7 +553,7 @@ fn table_from_record_batches(
             let ratio = num_fields as f32 / source.fields.len() as f32;
 
             // TODO: SizeCompatibilityConfig struct
-            if ratio >= 0.7 && ratio <= 1.3 {
+            if (0.7..=1.3).contains(&ratio) {
                 tmp_match.push(TableMatch { schema, confidence });
             }
         }
@@ -858,7 +852,7 @@ fn fields_from_record_batches(
             } else {
                 candidate_fields
                     .entry(table_id)
-                    .or_insert(Vec::new())
+                    .or_default()
                     .push(FieldMatch {
                         schema,
                         embedding: DVector::from_vec(embedding),

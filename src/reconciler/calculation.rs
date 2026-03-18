@@ -106,7 +106,7 @@ pub fn l2_norm(x: DVector<f32>) -> DVector<f32> {
 pub fn skewness(data: &[f64], sample_size: usize, avg: f64) -> Option<f64> {
     let nf = sample_size as f64;
 
-    let (m2, m3) = data.into_iter().fold((0.0_f64, 0.0_f64), |(s2, s3), x| {
+    let (m2, m3) = data.iter().fold((0.0_f64, 0.0_f64), |(s2, s3), x| {
         let d = x - avg;
         (s2 + d * d, s3 + d * d * d)
     });
@@ -126,7 +126,7 @@ pub fn skewness(data: &[f64], sample_size: usize, avg: f64) -> Option<f64> {
 pub fn kurtosis(data: &[f64], sample_size: usize, avg: f64) -> Option<f64> {
     let nf = sample_size as f64;
 
-    let (m2, m4) = data.into_iter().fold((0.0_f64, 0.0_f64), |(s2, s4), x| {
+    let (m2, m4) = data.iter().fold((0.0_f64, 0.0_f64), |(s2, s4), x| {
         let d = x - avg;
         let d2 = d * d;
 
@@ -189,7 +189,7 @@ pub fn autocorrelation(data: &[f64], sample_size: usize, avg: f64, lag: usize) -
         return None;
     }
 
-    let variance = data.into_iter().map(|x| (x - avg).powi(2)).sum::<f64>();
+    let variance = data.iter().map(|x| (x - avg).powi(2)).sum::<f64>();
 
     if variance == 0.0 {
         return None;

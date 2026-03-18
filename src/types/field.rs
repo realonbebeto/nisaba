@@ -382,19 +382,17 @@ impl FieldProfile {
     ///   a parameter. This function checks the cardinality of a field and appends a message describing
     ///   the cardinality to the `out` string based on the cardinality value.
     fn write_cardinality(&self, out: &mut String) {
-        if let Some(st) = &self.field_stats {
-            if let Some(cardinality) = st.cardinality {
-                if cardinality > 0.89 {
-                    out.push_str("Values in the field are highly unique. ");
-                } else if cardinality > 0.49 {
-                    out.push_str("Values in the field are moderately unique. ");
-                } else if cardinality > 0.009 {
-                    out.push_str(
-                        "Values in the field repeat frequently, exhibiting low-cardinality. ",
-                    );
-                } else {
-                    out.push_str("Values in the field revolve around two or three values. ");
-                }
+        if let Some(st) = &self.field_stats
+            && let Some(cardinality) = st.cardinality
+        {
+            if cardinality > 0.89 {
+                out.push_str("Values in the field are highly unique. ");
+            } else if cardinality > 0.49 {
+                out.push_str("Values in the field are moderately unique. ");
+            } else if cardinality > 0.009 {
+                out.push_str("Values in the field repeat frequently, exhibiting low-cardinality. ");
+            } else {
+                out.push_str("Values in the field revolve around two or three values. ");
             }
         }
     }

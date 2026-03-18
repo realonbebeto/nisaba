@@ -129,7 +129,7 @@ impl SchemaAnalyzer {
                     for t_id in t_ids {
                         if let Some(fms) = loaded_fields.candidate_fields.get(&t_id) {
                             let c_f = fms
-                                .into_iter()
+                                .iter()
                                 .enumerate()
                                 .map(|(idx, qf)| FieldCluster {
                                     cluster_id: idx as u32,
@@ -165,8 +165,7 @@ impl SchemaAnalyzer {
 
         let stats = {
             let lockd = self.context.stats.lock().unwrap();
-            let stats = lockd.clone();
-            stats
+            lockd.clone()
         };
 
         Ok(
@@ -399,10 +398,10 @@ fn align_fields(
             for c_field in c_fields {
                 let similarity = cosine_similarity(&query_field.embedding, &c_field.embedding);
 
-                if similarity >= config.threshold {
-                    if best_match.is_none() || similarity > best_match.unwrap().1 {
-                        best_match = Some((c_field.schema.id, similarity));
-                    }
+                if similarity >= config.threshold
+                    && (best_match.is_none() || similarity > best_match.unwrap().1)
+                {
+                    best_match = Some((c_field.schema.id, similarity));
                 }
             }
 
@@ -429,10 +428,10 @@ fn align_fields(
             for query_field in query_fields {
                 let similarity = cosine_similarity(&query_field.embedding, &c_field.embedding);
 
-                if similarity >= config.threshold {
-                    if best_match.is_none() || similarity > best_match.unwrap().1 {
-                        best_match = Some((query_field.schema.id, similarity));
-                    }
+                if similarity >= config.threshold
+                    && (best_match.is_none() || similarity > best_match.unwrap().1)
+                {
+                    best_match = Some((query_field.schema.id, similarity));
                 }
             }
 
@@ -500,13 +499,10 @@ fn cluster_fields(
         let all_field_aligns = table_alignments
             .iter()
             .map(|ta| {
-                let fa = ta
-                    .alignments
+                ta.alignments
                     .iter()
                     .map(|v| (ta.candidate_tid, v))
-                    .collect::<Vec<(Uuid, &FieldAlignment)>>();
-
-                fa
+                    .collect::<Vec<(Uuid, &FieldAlignment)>>()
             })
             .collect::<Vec<Vec<(Uuid, &FieldAlignment)>>>()
             .concat();
@@ -525,18 +521,17 @@ fn cluster_fields(
 
         if !match_aligns.is_empty() {
             for (cid, fa) in match_aligns {
-                if let Some(candidate_metas) = candidate_fields.get(&cid) {
-                    if let Some(cm) = candidate_metas
+                if let Some(candidate_metas) = candidate_fields.get(&cid)
+                    && let Some(cm) = candidate_metas
                         .iter()
                         .find(|v| v.schema.id == fa.candidate_field_id)
-                    {
-                        aligned_fields.push(FieldResult {
-                            id: cm.schema.id,
-                            table_id: cm.schema.table_id,
-                            field_name: cm.schema.name.clone(),
-                            similarity: fa.similarity,
-                        });
-                    }
+                {
+                    aligned_fields.push(FieldResult {
+                        id: cm.schema.id,
+                        table_id: cm.schema.table_id,
+                        field_name: cm.schema.name.clone(),
+                        similarity: fa.similarity,
+                    });
                 }
             }
 
