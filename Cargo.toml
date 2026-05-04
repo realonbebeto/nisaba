@@ -38,7 +38,7 @@ futures = { version = "0.3.32" }
 lancedb = { version = "0.27.0", default-features = false }
 mongodb = { version = "3.5.1", features = ["sync"] }
 nalgebra = "0.34.1"
-parquet = { version = "57.2.0", default-features = false, features = [
+parquet = { version = "58.2.0", default-features = false, features = [
     "arrow",
     "snap",
     "zstd",
