@@ -27,7 +27,7 @@ exclude = ["assets/*"]
 
 [dependencies]
 anyhow = { version = "1.0.102" }
-arrow = { version = "57.2.0", features = ["csv"], default-features = false }
+arrow = { version = "58.2.0", features = ["csv"], default-features = false }
 calamine = { version = "0.34.0", default-features = false, features = [
     "chrono",
 ] }
